@@ -146,7 +146,7 @@ type listObjectsResponse struct {
 }
 
 func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	if !allow(r, deps, "s3:ListAllMyBuckets", "*") {
+	if !allow(r, deps, "gcs:ListBuckets", "*") {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -180,8 +180,8 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:CreateBucket", resource) {
+	resource := gcsBucketResource(bucket)
+	if !allow(r, deps, "gcs:CreateBucket", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -199,8 +199,8 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:ListBucket", resource) {
+	resource := gcsBucketResource(bucket)
+	if !allow(r, deps, "gcs:GetBucket", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -219,8 +219,8 @@ func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:ListBucket", resource) {
+	resource := gcsBucketResource(bucket)
+	if !allow(r, deps, "gcs:ListObjects", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -272,8 +272,8 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
+	resource := gcsObjectResource(bucket, key)
+	if !allow(r, deps, "gcs:PutObject", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -350,8 +350,8 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
+	resource := gcsObjectResource(bucket, key)
+	if !allow(r, deps, "gcs:PutObject", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -386,8 +386,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		http.NotFound(w, r)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:GetObject", resource) {
+	resource := gcsObjectResource(bucket, key)
+	if !allow(r, deps, "gcs:GetObject", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -427,8 +427,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:DeleteObject", resource) {
+	resource := gcsObjectResource(bucket, key)
+	if !allow(r, deps, "gcs:DeleteObject", resource) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -491,12 +491,12 @@ func putObjectWithCRC32C(ctx context.Context, deps common.Dependencies, bucket, 
 	return meta, base64.StdEncoding.EncodeToString(buf[:]), nil
 }
 
-func bucketResource(bucket string) string {
-	return "arn:mockbucket:s3:::" + bucket
+func gcsBucketResource(bucket string) string {
+	return "gcs:bucket:" + bucket
 }
 
-func objectResource(bucket, key string) string {
-	return "arn:mockbucket:s3:::" + bucket + "/" + key
+func gcsObjectResource(bucket, key string) string {
+	return "gcs:object:" + bucket + "/" + key
 }
 
 func pathObject(r *http.Request) (string, error) {
