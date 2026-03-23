@@ -39,7 +39,7 @@ func TestRuntimeRegistersHealthRoutes(t *testing.T) {
 
 func TestRuntimeRejectsUnsupportedFrontends(t *testing.T) {
 	cfg := baseConfig(t)
-	cfg.Frontends.GCS = true
+	cfg.Frontends.Azure = true
 	_, err := New(context.Background(), cfg, slog.New(slog.NewTextHandler(testWriter{t}, nil)))
 	if err == nil {
 		t.Fatal("New() error = nil, want unsupported frontend error")

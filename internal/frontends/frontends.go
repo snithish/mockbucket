@@ -13,9 +13,6 @@ import (
 )
 
 func Validate(cfg config.Config) error {
-	if cfg.Frontends.GCS {
-		return fmt.Errorf("frontends.gcs is not implemented yet")
-	}
 	if cfg.Frontends.Azure {
 		return fmt.Errorf("frontends.azure is not implemented yet")
 	}
@@ -26,6 +23,6 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	registerAWSRoot(mux, cfg, deps)
 	s3.Register(mux, cfg, deps)
 	sts.Register(mux, cfg, deps)
-	gcs.Register(mux, cfg)
+	gcs.Register(mux, cfg, deps)
 	azure.Register(mux, cfg)
 }
