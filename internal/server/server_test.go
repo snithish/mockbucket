@@ -172,6 +172,85 @@ func TestS3ObjectCRUD(t *testing.T) {
 	}
 }
 
+func TestS3ListObjectsV2(t *testing.T) {
+	runtime := newTestRuntime(t, true, false)
+	defer func() { _ = runtime.Close() }()
+	svc := newS3Client(t, runtime, "admin", "admin-secret", "")
+	ctx := context.Background()
+
+	keys := []string{
+		"logs/2024-01.txt",
+		"logs/2024-02.txt",
+		"logs/2024-03.txt",
+		"tmp/skip.txt",
+	}
+	for _, key := range keys {
+		if _, err := svc.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String("demo"),
+			Key:    aws.String(key),
+			Body:   strings.NewReader("data"),
+		}); err != nil {
+			t.Fatalf("PutObject(%s) error = %v", key, err)
+		}
+	}
+
+	first, err := svc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String("demo"),
+		Prefix:  aws.String("logs/"),
+		MaxKeys: aws.Int32(2),
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsV2() error = %v", err)
+	}
+	if got, want := len(first.Contents), 2; got != want {
+		t.Fatalf("first page contents = %d, want %d", got, want)
+	}
+	if got := aws.ToString(first.NextContinuationToken); got == "" {
+		t.Fatal("first page missing NextContinuationToken")
+	}
+	if got := aws.ToBool(first.IsTruncated); !got {
+		t.Fatal("first page IsTruncated = false, want true")
+	}
+	if aws.ToString(first.Contents[0].Key) != "logs/2024-01.txt" || aws.ToString(first.Contents[1].Key) != "logs/2024-02.txt" {
+		t.Fatalf("first page keys = [%s %s], want logs/2024-01.txt logs/2024-02.txt",
+			aws.ToString(first.Contents[0].Key), aws.ToString(first.Contents[1].Key))
+	}
+
+	second, err := svc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:            aws.String("demo"),
+		Prefix:            aws.String("logs/"),
+		ContinuationToken: first.NextContinuationToken,
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsV2(continuation) error = %v", err)
+	}
+	if got, want := len(second.Contents), 1; got != want {
+		t.Fatalf("second page contents = %d, want %d", got, want)
+	}
+	if got := aws.ToBool(second.IsTruncated); got {
+		t.Fatal("second page IsTruncated = true, want false")
+	}
+	if aws.ToString(second.Contents[0].Key) != "logs/2024-03.txt" {
+		t.Fatalf("second page key = %s, want logs/2024-03.txt", aws.ToString(second.Contents[0].Key))
+	}
+
+	startAfter, err := svc.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:     aws.String("demo"),
+		Prefix:     aws.String("logs/"),
+		StartAfter: aws.String("logs/2024-01.txt"),
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsV2(start-after) error = %v", err)
+	}
+	if got, want := len(startAfter.Contents), 2; got != want {
+		t.Fatalf("start-after contents = %d, want %d", got, want)
+	}
+	if aws.ToString(startAfter.Contents[0].Key) != "logs/2024-02.txt" || aws.ToString(startAfter.Contents[1].Key) != "logs/2024-03.txt" {
+		t.Fatalf("start-after keys = [%s %s], want logs/2024-02.txt logs/2024-03.txt",
+			aws.ToString(startAfter.Contents[0].Key), aws.ToString(startAfter.Contents[1].Key))
+	}
+}
+
 func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 	runtime := newTestRuntime(t, true, true)
 	defer func() { _ = runtime.Close() }()

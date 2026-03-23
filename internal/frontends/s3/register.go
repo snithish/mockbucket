@@ -31,6 +31,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 			handleHeadBucket(w, r, deps, bucket)
 		case r.Method == http.MethodGet && hasLocationQuery(r):
 			handleGetBucketLocation(w, r, deps, bucket)
+		case r.Method == http.MethodGet && hasListObjectsV2Query(r):
+			handleListObjectsV2(w, r, deps, bucket)
 		default:
 			http.NotFound(w, r)
 		}
@@ -251,6 +253,91 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	resource := bucketResource(bucket)
+	if !allow(r, deps, "s3:ListBucket", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	maxKeys, err := parseMaxKeys(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	prefix := r.URL.Query().Get("prefix")
+	continuation := r.URL.Query().Get("continuation-token")
+	startAfter := r.URL.Query().Get("start-after")
+	after := continuation
+	if after == "" {
+		after = startAfter
+	}
+	if after == "" {
+		after = r.URL.Query().Get("marker")
+	}
+	objects := []core.ObjectMetadata{}
+	isTruncated := false
+	nextContinuation := ""
+	if maxKeys != 0 {
+		fetchLimit := maxKeys + 1
+		items, err := deps.Metadata.ListObjects(r.Context(), bucket, prefix, fetchLimit, after)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if len(items) > maxKeys {
+			isTruncated = true
+			items = items[:maxKeys]
+		}
+		if isTruncated && len(items) > 0 {
+			nextContinuation = items[len(items)-1].Key
+		}
+		objects = items
+	}
+	type content struct {
+		Key          string `xml:"Key"`
+		LastModified string `xml:"LastModified"`
+		ETag         string `xml:"ETag"`
+		Size         int64  `xml:"Size"`
+		StorageClass string `xml:"StorageClass"`
+	}
+	response := struct {
+		XMLName               xml.Name  `xml:"ListBucketResult"`
+		Xmlns                 string    `xml:"xmlns,attr"`
+		Name                  string    `xml:"Name"`
+		Prefix                string    `xml:"Prefix,omitempty"`
+		KeyCount              int       `xml:"KeyCount"`
+		MaxKeys               int       `xml:"MaxKeys"`
+		IsTruncated           bool      `xml:"IsTruncated"`
+		Contents              []content `xml:"Contents"`
+		ContinuationToken     string    `xml:"ContinuationToken,omitempty"`
+		NextContinuationToken string    `xml:"NextContinuationToken,omitempty"`
+		StartAfter            string    `xml:"StartAfter,omitempty"`
+	}{Xmlns: xmlNamespace, Name: bucket, Prefix: prefix, KeyCount: len(objects), MaxKeys: maxKeys, IsTruncated: isTruncated}
+	for _, item := range objects {
+		response.Contents = append(response.Contents, content{
+			Key:          item.Key,
+			LastModified: item.ModifiedAt.UTC().Format(time.RFC3339),
+			ETag:         `"` + item.ETag + `"`,
+			Size:         item.Size,
+			StorageClass: "STANDARD",
+		})
+	}
+	if continuation != "" {
+		response.ContinuationToken = continuation
+	}
+	if startAfter != "" && continuation == "" {
+		response.StartAfter = startAfter
+	}
+	if nextContinuation != "" {
+		response.NextContinuationToken = nextContinuation
+	}
+	writeXML(w, http.StatusOK, response)
+}
+
 func allow(r *http.Request, deps common.Dependencies, action, resource string) bool {
 	subject, ok := httpx.SubjectFromContext(r.Context())
 	if !ok {
@@ -262,6 +349,10 @@ func allow(r *http.Request, deps common.Dependencies, action, resource string) b
 func hasLocationQuery(r *http.Request) bool {
 	_, ok := r.URL.Query()["location"]
 	return ok
+}
+
+func hasListObjectsV2Query(r *http.Request) bool {
+	return r.URL.Query().Get("list-type") == "2"
 }
 
 func bucketResource(bucket string) string {
@@ -301,4 +392,16 @@ func writeError(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, err.Error(), httpx.StatusCode(err))
+}
+
+func parseMaxKeys(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("max-keys")
+	if raw == "" {
+		return 1000, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	return value, nil
 }
