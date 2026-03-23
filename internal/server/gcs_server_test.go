@@ -1,30 +1,18 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
-	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"cloud.google.com/go/storage"
+	"golang.org/x/oauth2"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 )
-
-type gcsBucketList struct {
-	Items []struct {
-		Name string `json:"name"`
-	} `json:"items"`
-}
-
-type gcsObject struct {
-	Name string `json:"name"`
-	Size string `json:"size"`
-}
-
-type gcsObjectList struct {
-	Items []gcsObject `json:"items"`
-}
 
 func TestGCSBucketAndObjectFlow(t *testing.T) {
 	cfg := baseConfig(t)
@@ -35,125 +23,128 @@ func TestGCSBucketAndObjectFlow(t *testing.T) {
 	}
 	defer func() { _ = runtime.Close() }()
 
-	endpoint := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(endpoint.Close)
-	client := endpoint.Client()
+	endpoint := newTestHTTPServer(t, runtime)
+	client := newGCSClient(t, endpoint)
+	defer func() { _ = client.Close() }()
 
-	listReq, err := http.NewRequest(http.MethodGet, endpoint.URL+"/storage/v1/b", nil)
+	ctx := context.Background()
+	projectID := "mock-project"
+
+	bucketName := "logs"
+	bucket := client.Bucket(bucketName)
+	if err := bucket.Create(ctx, projectID, nil); err != nil {
+		t.Fatalf("Create bucket error = %v", err)
+	}
+
+	bucketNames := listBucketNames(t, client, projectID)
+	if !contains(bucketNames, "demo") || !contains(bucketNames, bucketName) {
+		t.Fatalf("List buckets missing demo/logs: %v", bucketNames)
+	}
+
+	obj := bucket.Object("app/log.txt")
+	writer := obj.NewWriter(ctx)
+	writer.ChunkSize = 0
+	writer.SendCRC32C = false
+	if _, err := writer.Write([]byte("hello")); err != nil {
+		t.Fatalf("write object: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close object writer: %v", err)
+	}
+
+	if _, err := runtime.Metadata.GetObject(ctx, bucketName, "app/log.txt"); err != nil {
+		t.Fatalf("metadata missing after upload: %v", err)
+	}
+
+	attrs, err := obj.Attrs(ctx)
 	if err != nil {
-		t.Fatalf("list buckets request: %v", err)
+		t.Fatalf("object attrs: %v", err)
 	}
-	listReq.Header.Set("Authorization", "Bearer admin")
-	listRes, err := client.Do(listReq)
+	if attrs.Name != "app/log.txt" || attrs.Size != 5 {
+		t.Fatalf("attrs = %+v", attrs)
+	}
+
+	reader, err := obj.NewReader(ctx)
 	if err != nil {
-		t.Fatalf("list buckets error = %v", err)
+		t.Fatalf("new reader: %v", err)
 	}
-	defer listRes.Body.Close()
-	if listRes.StatusCode != http.StatusOK {
-		t.Fatalf("list buckets status = %d", listRes.StatusCode)
+	defer func() { _ = reader.Close() }()
+	bodyBytes, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
 	}
-	var listPayload gcsBucketList
-	if err := json.NewDecoder(listRes.Body).Decode(&listPayload); err != nil {
-		t.Fatalf("list buckets decode: %v", err)
+	body := string(bodyBytes)
+	if body != "hello" {
+		t.Fatalf("object body = %q", body)
 	}
-	found := false
-	for _, item := range listPayload.Items {
-		if item.Name == "demo" {
-			found = true
+
+	objects := listObjectNames(t, bucket, "app/")
+	if len(objects) != 1 || objects[0] != "app/log.txt" {
+		t.Fatalf("list objects = %v", objects)
+	}
+}
+
+func newGCSClient(t *testing.T, endpoint string) *storage.Client {
+	t.Helper()
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "admin"})
+	apiEndpoint := strings.TrimRight(endpoint, "/") + "/storage/v1/"
+	client, err := storage.NewClient(context.Background(),
+		option.WithEndpoint(apiEndpoint),
+		option.WithTokenSource(tokenSource),
+		option.WithScopes(storage.ScopeFullControl),
+	)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	return client
+}
+
+func newTestHTTPServer(t *testing.T, runtime *Runtime) string {
+	t.Helper()
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func listBucketNames(t *testing.T, client *storage.Client, projectID string) []string {
+	t.Helper()
+	var names []string
+	it := client.Buckets(context.Background(), projectID)
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
 			break
 		}
+		if err != nil {
+			t.Fatalf("list buckets error = %v", err)
+		}
+		names = append(names, attrs.Name)
 	}
-	if !found {
-		t.Fatalf("list buckets missing demo")
-	}
+	return names
+}
 
-	createBody := bytes.NewBufferString(`{"name":"logs"}`)
-	createReq, err := http.NewRequest(http.MethodPost, endpoint.URL+"/storage/v1/b?project=test", createBody)
-	if err != nil {
-		t.Fatalf("create bucket request: %v", err)
+func listObjectNames(t *testing.T, bucket *storage.BucketHandle, prefix string) []string {
+	t.Helper()
+	var names []string
+	it := bucket.Objects(context.Background(), &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			t.Fatalf("list objects error = %v", err)
+		}
+		names = append(names, attrs.Name)
 	}
-	createReq.Header.Set("Authorization", "Bearer admin")
-	createReq.Header.Set("Content-Type", "application/json")
-	createRes, err := client.Do(createReq)
-	if err != nil {
-		t.Fatalf("create bucket error = %v", err)
-	}
-	createRes.Body.Close()
-	if createRes.StatusCode != http.StatusOK {
-		t.Fatalf("create bucket status = %d", createRes.StatusCode)
-	}
+	return names
+}
 
-	uploadReq, err := http.NewRequest(http.MethodPost, endpoint.URL+"/upload/storage/v1/b/logs/o?uploadType=media&name=app/log.txt", bytes.NewBufferString("hello"))
-	if err != nil {
-		t.Fatalf("upload request: %v", err)
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
 	}
-	uploadReq.Header.Set("Authorization", "Bearer admin")
-	uploadRes, err := client.Do(uploadReq)
-	if err != nil {
-		t.Fatalf("upload error = %v", err)
-	}
-	uploadRes.Body.Close()
-	if uploadRes.StatusCode != http.StatusOK {
-		t.Fatalf("upload status = %d", uploadRes.StatusCode)
-	}
-
-	metaReq, err := http.NewRequest(http.MethodGet, endpoint.URL+"/storage/v1/b/logs/o/app/log.txt", nil)
-	if err != nil {
-		t.Fatalf("metadata request: %v", err)
-	}
-	metaReq.Header.Set("Authorization", "Bearer admin")
-	metaRes, err := client.Do(metaReq)
-	if err != nil {
-		t.Fatalf("metadata error = %v", err)
-	}
-	defer metaRes.Body.Close()
-	if metaRes.StatusCode != http.StatusOK {
-		t.Fatalf("metadata status = %d", metaRes.StatusCode)
-	}
-	var metaPayload gcsObject
-	if err := json.NewDecoder(metaRes.Body).Decode(&metaPayload); err != nil {
-		t.Fatalf("metadata decode: %v", err)
-	}
-	if metaPayload.Name != "app/log.txt" || metaPayload.Size != "5" {
-		t.Fatalf("metadata = %+v", metaPayload)
-	}
-
-	getReq, err := http.NewRequest(http.MethodGet, endpoint.URL+"/storage/v1/b/logs/o/app/log.txt?alt=media", nil)
-	if err != nil {
-		t.Fatalf("get request: %v", err)
-	}
-	getReq.Header.Set("Authorization", "Bearer admin")
-	getRes, err := client.Do(getReq)
-	if err != nil {
-		t.Fatalf("get error = %v", err)
-	}
-	defer getRes.Body.Close()
-	body, err := io.ReadAll(getRes.Body)
-	if err != nil {
-		t.Fatalf("get read: %v", err)
-	}
-	if string(body) != "hello" {
-		t.Fatalf("get body = %q", string(body))
-	}
-
-	listObjReq, err := http.NewRequest(http.MethodGet, endpoint.URL+"/storage/v1/b/logs/o?prefix=app/", nil)
-	if err != nil {
-		t.Fatalf("list objects request: %v", err)
-	}
-	listObjReq.Header.Set("Authorization", "Bearer admin")
-	listObjRes, err := client.Do(listObjReq)
-	if err != nil {
-		t.Fatalf("list objects error = %v", err)
-	}
-	defer listObjRes.Body.Close()
-	if listObjRes.StatusCode != http.StatusOK {
-		t.Fatalf("list objects status = %d", listObjRes.StatusCode)
-	}
-	var listObjPayload gcsObjectList
-	if err := json.NewDecoder(listObjRes.Body).Decode(&listObjPayload); err != nil {
-		t.Fatalf("list objects decode: %v", err)
-	}
-	if len(listObjPayload.Items) != 1 || listObjPayload.Items[0].Name != "app/log.txt" {
-		t.Fatalf("list objects payload = %+v", listObjPayload.Items)
-	}
+	return false
 }

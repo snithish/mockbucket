@@ -1,9 +1,16 @@
 package gcs
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +23,9 @@ import (
 )
 
 const (
-	bucketsBasePath = "/storage/v1/b"
-	uploadBasePath  = "/upload/storage/v1/b"
+	bucketsBasePath  = "/storage/v1/b"
+	uploadBasePath   = "/upload/storage/v1/b"
+	downloadBasePath = "/download/storage/v1/b"
 )
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
@@ -52,15 +60,31 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	}))
 	objectHandler := authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
-		key := r.PathValue("object")
+		key, err := pathObject(r)
+		if err != nil {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
-			handleGetObject(w, r, deps, bucket, key)
+			handleGetObject(w, r, deps, bucket, key, false)
 		case http.MethodDelete:
 			handleDeleteObject(w, r, deps, bucket, key)
 		default:
 			http.NotFound(w, r)
 		}
+	}))
+	downloadHandler := authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		key, err := pathObject(r)
+		if err != nil {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
 	}))
 	uploadHandler := authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -74,7 +98,22 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	mux.Handle(bucketsBasePath+"/{bucket}", bucketHandler)
 	mux.Handle(bucketsBasePath+"/{bucket}/o", objectsHandler)
 	mux.Handle(bucketsBasePath+"/{bucket}/o/{object...}", objectHandler)
+	mux.Handle(downloadBasePath+"/{bucket}/o/{object...}", downloadHandler)
 	mux.Handle(uploadBasePath+"/{bucket}/o", uploadHandler)
+	if !cfg.Frontends.S3 {
+		mux.Handle("/{bucket}/{object...}", authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.NotFound(w, r)
+				return
+			}
+			key, err := pathObject(r)
+			if err != nil {
+				writeError(w, core.ErrInvalidArgument)
+				return
+			}
+			handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
+		})))
+	}
 }
 
 type bucketResponse struct {
@@ -94,6 +133,7 @@ type objectResponse struct {
 	Bucket      string `json:"bucket"`
 	Name        string `json:"name"`
 	Size        string `json:"size"`
+	CRC32C      string `json:"crc32c,omitempty"`
 	ETag        string `json:"etag"`
 	TimeCreated string `json:"timeCreated"`
 	Updated     string `json:"updated"`
@@ -215,10 +255,18 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 }
 
 func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	if r.URL.Query().Get("uploadType") != "media" {
+	uploadType := r.URL.Query().Get("uploadType")
+	switch uploadType {
+	case "media":
+		handleMediaUpload(w, r, deps, bucket)
+	case "multipart":
+		handleMultipartUpload(w, r, deps, bucket)
+	default:
 		writeError(w, core.ErrInvalidArgument)
-		return
 	}
+}
+
+func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
 	key := strings.TrimSpace(r.URL.Query().Get("name"))
 	if key == "" {
 		writeError(w, core.ErrInvalidArgument)
@@ -233,7 +281,7 @@ func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, err)
 		return
 	}
-	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, r.Body)
+	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, r.Body)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -247,6 +295,7 @@ func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		Bucket:      meta.Bucket,
 		Name:        meta.Key,
 		Size:        strconv.FormatInt(meta.Size, 10),
+		CRC32C:      crc32c,
 		ETag:        strings.Trim(meta.ETag, "\""),
 		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
 		Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
@@ -254,7 +303,85 @@ func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	contentType := r.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	reader := multipart.NewReader(r.Body, boundary)
+	var (
+		metadata struct {
+			Name string `json:"name"`
+		}
+		media io.Reader
+	)
+	for i := 0; i < 2; i++ {
+		part, err := reader.NextPart()
+		if err != nil {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		defer func() { _ = part.Close() }()
+		partType := part.Header.Get("Content-Type")
+		if i == 0 {
+			if err := json.NewDecoder(part).Decode(&metadata); err != nil {
+				writeError(w, core.ErrInvalidArgument)
+				return
+			}
+		} else {
+			media = part
+			if partType == "" {
+				partType = "application/octet-stream"
+			}
+		}
+	}
+	key := strings.TrimSpace(r.URL.Query().Get("name"))
+	if key == "" {
+		key = strings.TrimSpace(metadata.Name)
+	}
+	if key == "" || media == nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	resource := objectResource(bucket, key)
+	if !allow(r, deps, "s3:PutObject", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, media)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	resp := objectResponse{
+		Kind:        "storage#object",
+		Bucket:      meta.Bucket,
+		Name:        meta.Key,
+		Size:        strconv.FormatInt(meta.Size, 10),
+		CRC32C:      crc32c,
+		ETag:        strings.Trim(meta.ETag, "\""),
+		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
+		Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string, forceMedia bool) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
 		return
@@ -273,7 +400,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		writeError(w, err)
 		return
 	}
-	if r.URL.Query().Get("alt") != "media" {
+	if !forceMedia && r.URL.Query().Get("alt") != "media" {
 		resp := objectResponse{
 			Kind:        "storage#object",
 			Bucket:      meta.Bucket,
@@ -352,10 +479,30 @@ func writeError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), httpx.StatusCode(err))
 }
 
+func putObjectWithCRC32C(ctx context.Context, deps common.Dependencies, bucket, key string, src io.Reader) (core.ObjectMetadata, string, error) {
+	hasher := crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	tee := io.TeeReader(src, hasher)
+	meta, err := deps.Objects.PutObject(ctx, bucket, key, tee)
+	if err != nil {
+		return core.ObjectMetadata{}, "", err
+	}
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], hasher.Sum32())
+	return meta, base64.StdEncoding.EncodeToString(buf[:]), nil
+}
+
 func bucketResource(bucket string) string {
 	return "arn:mockbucket:s3:::" + bucket
 }
 
 func objectResource(bucket, key string) string {
 	return "arn:mockbucket:s3:::" + bucket + "/" + key
+}
+
+func pathObject(r *http.Request) (string, error) {
+	raw := r.PathValue("object")
+	if raw == "" {
+		return "", nil
+	}
+	return url.PathUnescape(raw)
 }
