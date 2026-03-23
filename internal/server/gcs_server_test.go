@@ -13,9 +13,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/storage"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
+	"github.com/snithish/mockbucket/internal/core"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -29,6 +31,7 @@ type gcsContractClient struct {
 	client    *storage.Client
 	endpoint  string
 	projectID string
+	token     string
 }
 
 func newGCSContractClient(t *testing.T) frontendContractClient {
@@ -38,13 +41,39 @@ func newGCSContractClient(t *testing.T) frontendContractClient {
 	})
 	t.Cleanup(func() { _ = runtime.Close() })
 
+	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
+		Name: "gcs-admin",
+		Policies: []core.PolicyDocument{{
+			Statements: []core.PolicyStatement{{
+				Effect:    core.EffectAllow,
+				Actions:   []string{"*"},
+				Resources: []string{"*"},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+	session := core.Session{
+		Token:         "gcs-token",
+		AccessKeyID:   "gcs-access",
+		SecretKey:     "gcs-secret",
+		PrincipalName: "admin",
+		RoleName:      "gcs-admin",
+		SessionName:   "gcs",
+		CreatedAt:     time.Now().UTC(),
+		ExpiresAt:     time.Now().UTC().Add(time.Hour),
+	}
+	if err := runtime.Metadata.CreateSession(context.Background(), session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
 	server := httptest.NewServer(runtime.HTTPServer.Handler)
 	t.Cleanup(server.Close)
 
-	client := newGCSClient(t, server.URL)
+	client := newGCSClient(t, server.URL, session.Token)
 	t.Cleanup(func() { _ = client.Close() })
 
-	return &gcsContractClient{client: client, endpoint: server.URL, projectID: "mock-project"}
+	return &gcsContractClient{client: client, endpoint: server.URL, projectID: "mock-project", token: session.Token}
 }
 
 func (c *gcsContractClient) CreateBucket(ctx context.Context, bucket string) error {
@@ -115,32 +144,49 @@ func (c *gcsContractClient) DeleteObject(ctx context.Context, bucket, key string
 }
 
 func (c *gcsContractClient) ListObjects(ctx context.Context, bucket, prefix string, maxKeys int32, continuationToken, startAfter string) (contractListResult, error) {
-	query := &storage.Query{Prefix: prefix}
-	if startAfter != "" {
-		query.StartOffset = startAfter
-	}
-	it := c.client.Bucket(bucket).Objects(ctx, query)
 	pageSize := int(maxKeys)
 	if pageSize <= 0 {
 		pageSize = 1000
 	}
-	pager := iterator.NewPager(it, pageSize, continuationToken)
-	var items []*storage.ObjectAttrs
-	nextToken, err := pager.NextPage(&items)
-	if err == iterator.Done {
-		return contractListResult{Keys: nil, NextToken: "", Truncated: false}, nil
+	endpoint := strings.TrimRight(c.endpoint, "/")
+	reqURL := fmt.Sprintf("%s/storage/v1/b/%s/o?prefix=%s&maxResults=%d", endpoint, url.PathEscape(bucket), url.QueryEscape(prefix), pageSize)
+	if continuationToken != "" {
+		reqURL += "&pageToken=" + url.QueryEscape(continuationToken)
 	}
+	if startAfter != "" {
+		reqURL += "&startOffset=" + url.QueryEscape(startAfter)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return contractListResult{}, err
 	}
-	keys := make([]string, 0, len(items))
-	for _, item := range items {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return contractListResult{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		return contractListResult{}, fmt.Errorf("list objects failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+		NextPageToken string `json:"nextPageToken"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return contractListResult{}, err
+	}
+	keys := make([]string, 0, len(payload.Items))
+	for _, item := range payload.Items {
 		if startAfter != "" && item.Name <= startAfter {
 			continue
 		}
 		keys = append(keys, item.Name)
 	}
-	return contractListResult{Keys: keys, NextToken: nextToken, Truncated: nextToken != ""}, nil
+	return contractListResult{Keys: keys, NextToken: payload.NextPageToken, Truncated: payload.NextPageToken != ""}, nil
 }
 
 func (c *gcsContractClient) MultipartUpload(ctx context.Context, bucket, key string, parts []string) error {
@@ -175,7 +221,7 @@ func (c *gcsContractClient) MultipartUpload(ctx context.Context, bucket, key str
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "multipart/related; boundary="+writer.Boundary())
 
 	resp, err := http.DefaultClient.Do(req)
@@ -190,9 +236,9 @@ func (c *gcsContractClient) MultipartUpload(ctx context.Context, bucket, key str
 	return nil
 }
 
-func newGCSClient(t *testing.T, endpoint string) *storage.Client {
+func newGCSClient(t *testing.T, endpoint, token string) *storage.Client {
 	t.Helper()
-	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "admin"})
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	apiEndpoint := strings.TrimRight(endpoint, "/") + "/storage/v1/"
 	client, err := storage.NewClient(context.Background(),
 		option.WithEndpoint(apiEndpoint),

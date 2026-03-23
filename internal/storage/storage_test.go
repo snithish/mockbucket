@@ -162,3 +162,36 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	}
 	_ = objects.AbortMultipartUpload(ctx, upload.UploadID)
 }
+
+func TestListObjectsUsesLiteralPrefix(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	for _, key := range []string{"logs/%done.txt", "logs/_done.txt", "logs/real.txt"} {
+		meta := core.ObjectMetadata{
+			Bucket:     "demo",
+			Key:        key,
+			Path:       "/tmp/" + key,
+			Size:       1,
+			ETag:       "etag",
+			CreatedAt:  time.Now().UTC(),
+			ModifiedAt: time.Now().UTC(),
+		}
+		if err := metadata.PutObject(ctx, meta); err != nil {
+			t.Fatalf("PutObject() error = %v", err)
+		}
+	}
+	items, err := metadata.ListObjects(ctx, "demo", "logs/%", 100, "")
+	if err != nil {
+		t.Fatalf("ListObjects() error = %v", err)
+	}
+	if len(items) != 1 || items[0].Key != "logs/%done.txt" {
+		t.Fatalf("expected literal prefix match, got %+v", items)
+	}
+}

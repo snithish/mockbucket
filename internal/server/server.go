@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,7 +64,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		AWSVerifier:    authaws.Verifier{},
 	}
 	mux := http.NewServeMux()
-	registerHealth(mux, metadata)
+	registerHealth(mux, cfg, metadata)
 	frontends.Register(mux, cfg, deps)
 	handler := httpx.RequestID(httpx.RequestLog(logger, cfg.Server.RequestLog, mux))
 	return &Runtime{
@@ -85,7 +86,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	go func() {
 		r.Logger.Info("mockbucket listening", slog.String("address", r.HTTPServer.Addr))
 		if err := r.HTTPServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
+			r.Logger.Error("mockbucket listen failed", slog.String("address", r.HTTPServer.Addr), slog.Any("error", err))
+			errCh <- fmt.Errorf("listen: %w", err)
 		}
 		close(errCh)
 	}()
@@ -108,7 +110,7 @@ func (r *Runtime) Close() error {
 	return r.Metadata.Close()
 }
 
-func registerHealth(mux *http.ServeMux, metadata storage.MetadataStore) {
+func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.MetadataStore) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -120,5 +122,45 @@ func registerHealth(mux *http.ServeMux, metadata storage.MetadataStore) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
+	})
+	mux.HandleFunc("GET /readyz/details", func(w http.ResponseWriter, r *http.Request) {
+		details := struct {
+			OK       bool `json:"ok"`
+			Metadata struct {
+				Healthy bool   `json:"healthy"`
+				Error   string `json:"error,omitempty"`
+			} `json:"metadata"`
+			Frontends struct {
+				S3    bool `json:"s3"`
+				STS   bool `json:"sts"`
+				GCS   bool `json:"gcs"`
+				Azure bool `json:"azure"`
+			} `json:"frontends"`
+			Seed struct {
+				Path string `json:"path"`
+			} `json:"seed"`
+		}{
+			OK: true,
+		}
+		if err := metadata.Ping(r.Context()); err != nil {
+			details.OK = false
+			details.Metadata.Healthy = false
+			details.Metadata.Error = err.Error()
+		} else {
+			details.Metadata.Healthy = true
+		}
+		details.Frontends.S3 = cfg.Frontends.S3
+		details.Frontends.STS = cfg.Frontends.STS
+		details.Frontends.GCS = cfg.Frontends.GCS
+		details.Frontends.Azure = cfg.Frontends.Azure
+		details.Seed.Path = cfg.Seed.Path
+
+		status := http.StatusOK
+		if !details.OK {
+			status = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(details)
 	})
 }

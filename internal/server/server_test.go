@@ -24,6 +24,13 @@ func TestRuntimeRegistersHealthRoutes(t *testing.T) {
 			t.Fatalf("%s status = %d, want %d", path, got, want)
 		}
 	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz/details", nil)
+	res := httptest.NewRecorder()
+	runtime.HTTPServer.Handler.ServeHTTP(res, req)
+	if got, want := res.Code, http.StatusOK; got != want {
+		t.Fatalf("/readyz/details status = %d, want %d", got, want)
+	}
 }
 
 func TestRuntimeRejectsUnsupportedFrontends(t *testing.T) {

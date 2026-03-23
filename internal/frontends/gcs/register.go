@@ -287,6 +287,7 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		return
 	}
 	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
@@ -365,6 +366,7 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		return
 	}
 	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
@@ -436,11 +438,11 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, err)
 		return
 	}
-	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil {
+	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
+	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
 		writeError(w, err)
 		return
 	}

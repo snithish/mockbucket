@@ -41,12 +41,15 @@ func RequestLog(logger *slog.Logger, enabled bool, next http.Handler) http.Handl
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(recorder, r)
 		logger.Info("http request",
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.String("request_id", RequestIDFromContext(r.Context())),
+			slog.Int("status", recorder.status),
+			slog.Int64("bytes_written", recorder.bytes),
 			slog.Duration("duration", time.Since(start)),
 		)
 	})
@@ -119,4 +122,21 @@ func mustRandomID() string {
 		return "request-id-error"
 	}
 	return hex.EncodeToString(buf)
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (r *responseRecorder) WriteHeader(statusCode int) {
+	r.status = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *responseRecorder) Write(p []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(p)
+	r.bytes += int64(n)
+	return n, err
 }

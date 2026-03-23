@@ -171,6 +171,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
@@ -252,11 +253,11 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, err)
 		return
 	}
-	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil {
+	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
+	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
 		writeError(w, err)
 		return
 	}
@@ -420,14 +421,22 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 		return
 	}
 	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
 	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), uploadID); err != nil {
+		_ = deps.Metadata.DeleteObject(r.Context(), bucket, key)
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
-	_ = deps.Objects.AbortMultipartUpload(r.Context(), uploadID)
+	if err := deps.Objects.AbortMultipartUpload(r.Context(), uploadID); err != nil && err != core.ErrNotFound {
+		_ = deps.Metadata.DeleteObject(r.Context(), bucket, key)
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+		writeError(w, err)
+		return
+	}
 	response := struct {
 		XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
 		Xmlns    string   `xml:"xmlns,attr"`

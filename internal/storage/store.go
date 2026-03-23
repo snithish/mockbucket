@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -51,6 +52,25 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+type SeedState struct {
+	Buckets    []string
+	Principals []core.Principal
+	Roles      []core.Role
+	Objects    []SeedObject
+}
+
+type SeedObject struct {
+	Bucket  string
+	Key     string
+	Content string
+}
+
+type sqlRunner interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func OpenSQLite(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -70,6 +90,103 @@ func (s *SQLiteStore) Ping(ctx context.Context) error {
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+func (s *SQLiteStore) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objects ObjectStore) error {
+	var written []core.ObjectMetadata
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		existingPrincipals, err := listPrincipals(ctx, tx)
+		if err != nil {
+			return err
+		}
+		existingRoles, err := listRoles(ctx, tx)
+		if err != nil {
+			return err
+		}
+		existingKeys, err := listAccessKeys(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		desiredPrincipals := map[string]struct{}{}
+		desiredRoles := map[string]struct{}{}
+		desiredKeys := map[string]struct{}{}
+
+		for _, bucket := range state.Buckets {
+			if err := createBucket(ctx, tx, bucket); err != nil && !errors.Is(err, core.ErrConflict) {
+				return err
+			}
+		}
+		for _, principal := range state.Principals {
+			desiredPrincipals[principal.Name] = struct{}{}
+			for _, key := range principal.AccessKeys {
+				desiredKeys[key.ID] = struct{}{}
+			}
+			if err := upsertPrincipal(ctx, tx, principal); err != nil {
+				return err
+			}
+		}
+		for _, role := range state.Roles {
+			desiredRoles[role.Name] = struct{}{}
+			if err := upsertRole(ctx, tx, role); err != nil {
+				return err
+			}
+		}
+		for _, key := range existingKeys {
+			if _, ok := desiredKeys[key.ID]; ok {
+				continue
+			}
+			if err := deleteAccessKey(ctx, tx, key.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+				return err
+			}
+		}
+		for _, name := range existingPrincipals {
+			if _, ok := desiredPrincipals[name]; ok {
+				continue
+			}
+			if err := deletePrincipal(ctx, tx, name); err != nil && !errors.Is(err, core.ErrNotFound) {
+				return err
+			}
+		}
+		for _, name := range existingRoles {
+			if _, ok := desiredRoles[name]; ok {
+				continue
+			}
+			if err := deleteRole(ctx, tx, name); err != nil && !errors.Is(err, core.ErrNotFound) {
+				return err
+			}
+		}
+		for _, object := range state.Objects {
+			meta, err := objects.PutObject(ctx, object.Bucket, object.Key, strings.NewReader(object.Content))
+			if err != nil {
+				return err
+			}
+			written = append(written, meta)
+			if err := putObject(ctx, tx, meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		for _, meta := range written {
+			_ = objects.DeleteObject(ctx, meta.Bucket, meta.Key)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *SQLiteStore) initSchema() error {
@@ -128,18 +245,21 @@ func (s *SQLiteStore) initSchema() error {
 }
 
 func (s *SQLiteStore) EnsureBucket(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO buckets(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, time.Now().UTC())
-	return err
+	return ensureBucket(ctx, s.db, name)
 }
 
 func (s *SQLiteStore) CreateBucket(ctx context.Context, name string) error {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO buckets(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, time.Now().UTC())
+	return createBucket(ctx, s.db, name)
+}
+
+func (s *SQLiteStore) DeleteBucket(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM buckets WHERE name = ?`, name)
 	if err != nil {
 		return err
 	}
 	affected, err := res.RowsAffected()
 	if err == nil && affected == 0 {
-		return core.ErrConflict
+		return core.ErrNotFound
 	}
 	return nil
 }
@@ -174,17 +294,7 @@ func (s *SQLiteStore) ListBuckets(ctx context.Context) ([]core.Bucket, error) {
 }
 
 func (s *SQLiteStore) PutObject(ctx context.Context, meta core.ObjectMetadata) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO objects(bucket, key, path, size, etag, created_at, modified_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(bucket, key) DO UPDATE SET
-			path = excluded.path,
-			size = excluded.size,
-			etag = excluded.etag,
-			modified_at = excluded.modified_at`,
-		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, meta.CreatedAt, meta.ModifiedAt,
-	)
-	return err
+	return putObject(ctx, s.db, meta)
 }
 
 func (s *SQLiteStore) GetObject(ctx context.Context, bucket, key string) (core.ObjectMetadata, error) {
@@ -215,12 +325,13 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, bucket, prefix string, li
 	if limit <= 0 {
 		limit = 1000
 	}
+	escapedPrefix := escapeLike(prefix)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT bucket, key, path, size, etag, created_at, modified_at
 		FROM objects
-		WHERE bucket = ? AND key LIKE ? AND key > ?
+		WHERE bucket = ? AND key LIKE ? ESCAPE '!' AND key > ?
 		ORDER BY key
-		LIMIT ?`, bucket, prefix+`%`, after, limit)
+		LIMIT ?`, bucket, escapedPrefix+`%`, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -237,45 +348,39 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, bucket, prefix string, li
 }
 
 func (s *SQLiteStore) UpsertPrincipal(ctx context.Context, principal core.Principal) error {
-	policiesJSON, err := json.Marshal(principal.Policies)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO principals(name, policies_json, created_at) VALUES(?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET policies_json = excluded.policies_json`,
-		principal.Name, string(policiesJSON), now,
-	); err != nil {
-		return err
-	}
-	for _, key := range principal.AccessKeys {
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO access_keys(id, secret, principal_name, created_at) VALUES(?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, principal_name = excluded.principal_name`,
-			key.ID, key.Secret, principal.Name, now,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
+	return upsertPrincipal(ctx, s.db, principal)
 }
 
 func (s *SQLiteStore) UpsertRole(ctx context.Context, role core.Role) error {
-	trustJSON, err := json.Marshal(role.Trust)
-	if err != nil {
-		return err
-	}
-	policiesJSON, err := json.Marshal(role.Policies)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO roles(name, trust_json, policies_json, created_at) VALUES(?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET trust_json = excluded.trust_json, policies_json = excluded.policies_json`,
-		role.Name, string(trustJSON), string(policiesJSON), time.Now().UTC(),
-	)
-	return err
+	return upsertRole(ctx, s.db, role)
+}
+
+func (s *SQLiteStore) ListPrincipals(ctx context.Context) ([]string, error) {
+	return listPrincipals(ctx, s.db)
+}
+
+func (s *SQLiteStore) ListRoles(ctx context.Context) ([]string, error) {
+	return listRoles(ctx, s.db)
+}
+
+func (s *SQLiteStore) ListAccessKeys(ctx context.Context) ([]core.AccessKey, error) {
+	return listAccessKeys(ctx, s.db)
+}
+
+func (s *SQLiteStore) DeleteAccessKey(ctx context.Context, accessKeyID string) error {
+	return deleteAccessKey(ctx, s.db, accessKeyID)
+}
+
+func (s *SQLiteStore) DeletePrincipal(ctx context.Context, name string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		return deletePrincipal(ctx, tx, name)
+	})
+}
+
+func (s *SQLiteStore) DeleteRole(ctx context.Context, name string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		return deleteRole(ctx, tx, name)
+	})
 }
 
 func (s *SQLiteStore) FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, []core.PolicyDocument, error) {
@@ -324,6 +429,9 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, session core.Session) e
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.Token, session.AccessKeyID, session.SecretKey, session.PrincipalName, session.RoleName, session.SessionName, session.ExpiresAt, session.CreatedAt,
 	)
+	if isUniqueConstraint(err) {
+		return core.ErrConflict
+	}
 	return err
 }
 
@@ -380,6 +488,9 @@ func (s *SQLiteStore) CreateMultipartUpload(ctx context.Context, upload core.Mul
 		VALUES(?, ?, ?, ?)`,
 		upload.UploadID, upload.Bucket, upload.Key, upload.CreatedAt,
 	)
+	if isUniqueConstraint(err) {
+		return core.ErrConflict
+	}
 	return err
 }
 
@@ -434,21 +545,195 @@ func (s *SQLiteStore) ListMultipartParts(ctx context.Context, uploadID string) (
 }
 
 func (s *SQLiteStore) DeleteMultipartUpload(ctx context.Context, uploadID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_parts WHERE upload_id = ?`, uploadID); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_uploads WHERE upload_id = ?`, uploadID); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_parts WHERE upload_id = ?`, uploadID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_uploads WHERE upload_id = ?`, uploadID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func isUniqueConstraint(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
+}
+
+func escapeLike(input string) string {
+	replacer := strings.NewReplacer(
+		`!`, `!!`,
+		`%`, `!%`,
+		`_`, `!_`,
+	)
+	return replacer.Replace(input)
+}
+
+func ensureBucket(ctx context.Context, runner sqlRunner, name string) error {
+	_, err := runner.ExecContext(ctx, `INSERT INTO buckets(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, time.Now().UTC())
+	return err
+}
+
+func createBucket(ctx context.Context, runner sqlRunner, name string) error {
+	res, err := runner.ExecContext(ctx, `INSERT INTO buckets(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrConflict
+	}
+	return nil
+}
+
+func putObject(ctx context.Context, runner sqlRunner, meta core.ObjectMetadata) error {
+	_, err := runner.ExecContext(ctx, `
+		INSERT INTO objects(bucket, key, path, size, etag, created_at, modified_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bucket, key) DO UPDATE SET
+			path = excluded.path,
+			size = excluded.size,
+			etag = excluded.etag,
+			modified_at = excluded.modified_at`,
+		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, meta.CreatedAt, meta.ModifiedAt,
+	)
+	return err
+}
+
+func upsertPrincipal(ctx context.Context, runner sqlRunner, principal core.Principal) error {
+	policiesJSON, err := json.Marshal(principal.Policies)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if _, err := runner.ExecContext(ctx, `
+		INSERT INTO principals(name, policies_json, created_at) VALUES(?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET policies_json = excluded.policies_json`,
+		principal.Name, string(policiesJSON), now,
+	); err != nil {
+		return err
+	}
+	for _, key := range principal.AccessKeys {
+		if _, err := runner.ExecContext(ctx, `
+			INSERT INTO access_keys(id, secret, principal_name, created_at) VALUES(?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, principal_name = excluded.principal_name`,
+			key.ID, key.Secret, principal.Name, now,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func upsertRole(ctx context.Context, runner sqlRunner, role core.Role) error {
+	trustJSON, err := json.Marshal(role.Trust)
+	if err != nil {
+		return err
+	}
+	policiesJSON, err := json.Marshal(role.Policies)
+	if err != nil {
+		return err
+	}
+	_, err = runner.ExecContext(ctx, `
+		INSERT INTO roles(name, trust_json, policies_json, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET trust_json = excluded.trust_json, policies_json = excluded.policies_json`,
+		role.Name, string(trustJSON), string(policiesJSON), time.Now().UTC(),
+	)
+	return err
+}
+
+func listPrincipals(ctx context.Context, runner sqlRunner) ([]string, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT name FROM principals ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+func listRoles(ctx context.Context, runner sqlRunner) ([]string, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT name FROM roles ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+func listAccessKeys(ctx context.Context, runner sqlRunner) ([]core.AccessKey, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT id, secret, principal_name, created_at FROM access_keys ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []core.AccessKey
+	for rows.Next() {
+		var key core.AccessKey
+		if err := rows.Scan(&key.ID, &key.Secret, &key.PrincipalName, &key.CreatedAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+func deleteAccessKey(ctx context.Context, runner sqlRunner, accessKeyID string) error {
+	res, err := runner.ExecContext(ctx, `DELETE FROM access_keys WHERE id = ?`, accessKeyID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrNotFound
+	}
+	return nil
+}
+
+func deletePrincipal(ctx context.Context, runner sqlRunner, name string) error {
+	if _, err := runner.ExecContext(ctx, `DELETE FROM access_keys WHERE principal_name = ?`, name); err != nil {
+		return err
+	}
+	if _, err := runner.ExecContext(ctx, `DELETE FROM sessions WHERE principal_name = ?`, name); err != nil {
+		return err
+	}
+	res, err := runner.ExecContext(ctx, `DELETE FROM principals WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrNotFound
+	}
+	return nil
+}
+
+func deleteRole(ctx context.Context, runner sqlRunner, name string) error {
+	if _, err := runner.ExecContext(ctx, `DELETE FROM sessions WHERE role_name = ?`, name); err != nil {
+		return err
+	}
+	res, err := runner.ExecContext(ctx, `DELETE FROM roles WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrNotFound
+	}
+	return nil
 }

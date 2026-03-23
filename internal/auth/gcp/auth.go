@@ -1,7 +1,6 @@
 package gcp
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
@@ -22,9 +21,6 @@ func Authenticate(resolver iam.Resolver, next http.Handler) http.Handler {
 		case strings.HasPrefix(strings.ToLower(header), "bearer "):
 			token := strings.TrimSpace(header[7:])
 			subject, err = resolver.ResolveBearerToken(r.Context(), token)
-			if err != nil && (errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthenticated)) {
-				subject, err = resolver.ResolveAccessKey(r.Context(), token)
-			}
 		case accessKey != "":
 			subject, err = resolver.ResolveAccessKey(r.Context(), accessKey)
 		case header != "":

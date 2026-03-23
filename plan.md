@@ -4,7 +4,8 @@
 - Build the standalone emulator as a new Go repo with one daemon, `mockbucketd`.
 - Keep each phase fully committable, logically isolated, and safe to land independently, even when it introduces breaking internal interfaces.
 - Sequence work so every later phase builds on a runnable baseline, with correctness and compatibility proved before widening surface area.
-- Keep GCS and Azure as disabled scaffolds until the S3/IAM/STS path is complete and stable.
+- GCS is supported as a live frontend; Azure remains a disabled scaffold.
+- S3 (+STS) and GCS are mutually exclusive in a single runtime configuration.
 
 ## Phase Plan
 
@@ -113,3 +114,6 @@
 - Seed state is YAML loaded at startup; there is no runtime bootstrap/admin API in v1.
 - IAM v1 is identity policies plus trust policies for `AssumeRole`; bucket policies remain out of scope.
 - Breaking changes are acceptable between phases while the repo is still converging on its stable v1 contracts.
+- The intended threat model is local dev and ephemeral CI.
+- The consistency contract is read-after-write.
+- Backward-compatibility requirements begin at v1.0.

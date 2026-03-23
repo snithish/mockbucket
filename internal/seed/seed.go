@@ -46,7 +46,6 @@ func (d Document) Validate() error {
 	var problems []string
 	bucketSet := map[string]struct{}{}
 	principalSet := map[string]struct{}{}
-	roleSet := map[string]struct{}{}
 	for i, bucket := range d.Buckets {
 		if strings.TrimSpace(bucket) == "" {
 			problems = append(problems, fmt.Sprintf("buckets[%d] is required", i))
@@ -71,7 +70,6 @@ func (d Document) Validate() error {
 			problems = append(problems, fmt.Sprintf("roles[%d].name is required", i))
 			continue
 		}
-		roleSet[role.Name] = struct{}{}
 		for j, statement := range role.Trust.Statements {
 			if len(statement.Principals) == 0 {
 				problems = append(problems, fmt.Sprintf("roles[%d].trust.statements[%d] requires principals", i, j))
@@ -91,7 +89,6 @@ func (d Document) Validate() error {
 			problems = append(problems, fmt.Sprintf("objects[%d].key is required", i))
 		}
 	}
-	_ = roleSet
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}

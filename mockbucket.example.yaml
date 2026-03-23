@@ -12,5 +12,9 @@ frontends:
   sts: true
   gcs: false
   azure: false
+# Supported profiles:
+# - S3 + STS: s3: true, sts: true, gcs: false
+# - S3 only: s3: true, sts: false, gcs: false
+# - GCS only: s3: false, sts: false, gcs: true
 auth:
   session_duration: 1h

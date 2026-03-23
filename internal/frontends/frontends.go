@@ -16,6 +16,12 @@ func Validate(cfg config.Config) error {
 	if cfg.Frontends.Azure {
 		return fmt.Errorf("frontends.azure is not implemented yet")
 	}
+	if cfg.Frontends.STS && !cfg.Frontends.S3 {
+		return fmt.Errorf("frontends.sts requires frontends.s3")
+	}
+	if cfg.Frontends.S3 && cfg.Frontends.GCS {
+		return fmt.Errorf("frontends.s3 and frontends.gcs cannot both be enabled")
+	}
 	return nil
 }
 
