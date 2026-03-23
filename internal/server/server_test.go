@@ -18,6 +18,7 @@ import (
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
@@ -297,8 +298,8 @@ func TestS3MultipartUpload(t *testing.T) {
 		Bucket:   aws.String("demo"),
 		Key:      aws.String("multipart/data.txt"),
 		UploadId: aws.String(uploadID),
-		MultipartUpload: &s3.CompletedMultipartUpload{
-			Parts: []s3.CompletedPart{
+		MultipartUpload: &s3types.CompletedMultipartUpload{
+			Parts: []s3types.CompletedPart{
 				{PartNumber: aws.Int32(1), ETag: part1Out.ETag},
 				{PartNumber: aws.Int32(2), ETag: part2Out.ETag},
 			},
