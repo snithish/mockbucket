@@ -17,6 +17,9 @@ type ObjectStore interface {
 	PutObject(ctx context.Context, bucket, key string, src ObjectSource) (core.ObjectMetadata, error)
 	OpenObject(ctx context.Context, bucket, key string) (ObjectReader, core.ObjectMetadata, error)
 	DeleteObject(ctx context.Context, bucket, key string) error
+	PutMultipartPart(ctx context.Context, uploadID string, partNumber int, src ObjectSource) (core.MultipartPart, error)
+	CompleteMultipartUpload(ctx context.Context, bucket, key string, parts []core.MultipartPart) (core.ObjectMetadata, error)
+	AbortMultipartUpload(ctx context.Context, uploadID string) error
 }
 
 type MetadataStore interface {
@@ -36,6 +39,11 @@ type MetadataStore interface {
 	CreateSession(ctx context.Context, session core.Session) error
 	GetSession(ctx context.Context, token string) (core.Session, []core.PolicyDocument, error)
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+	CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error
+	GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error)
+	PutMultipartPart(ctx context.Context, part core.MultipartPart) error
+	ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error)
+	DeleteMultipartUpload(ctx context.Context, uploadID string) error
 	Close() error
 }
 
@@ -93,6 +101,23 @@ func (s *SQLiteStore) initSchema() error {
 			created_at TIMESTAMP NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS multipart_uploads (
+			upload_id TEXT PRIMARY KEY,
+			bucket TEXT NOT NULL,
+			key TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_multipart_uploads_bucket_key ON multipart_uploads(bucket, key);`,
+		`CREATE TABLE IF NOT EXISTS multipart_parts (
+			upload_id TEXT NOT NULL,
+			part_number INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			path TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (upload_id, part_number)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_multipart_parts_upload_id ON multipart_parts(upload_id);`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -347,6 +372,81 @@ func (s *SQLiteStore) GetSessionByAccessKey(ctx context.Context, accessKeyID str
 func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now)
 	return err
+}
+
+func (s *SQLiteStore) CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO multipart_uploads(upload_id, bucket, key, created_at)
+		VALUES(?, ?, ?, ?)`,
+		upload.UploadID, upload.Bucket, upload.Key, upload.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error) {
+	var upload core.MultipartUpload
+	row := s.db.QueryRowContext(ctx, `
+		SELECT upload_id, bucket, key, created_at
+		FROM multipart_uploads
+		WHERE upload_id = ?`, uploadID)
+	if err := row.Scan(&upload.UploadID, &upload.Bucket, &upload.Key, &upload.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return core.MultipartUpload{}, core.ErrNotFound
+		}
+		return core.MultipartUpload{}, err
+	}
+	return upload, nil
+}
+
+func (s *SQLiteStore) PutMultipartPart(ctx context.Context, part core.MultipartPart) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO multipart_parts(upload_id, part_number, etag, size, path, created_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(upload_id, part_number) DO UPDATE SET
+			etag = excluded.etag,
+			size = excluded.size,
+			path = excluded.path,
+			created_at = excluded.created_at`,
+		part.UploadID, part.PartNumber, part.ETag, part.Size, part.Path, part.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT upload_id, part_number, etag, size, path, created_at
+		FROM multipart_parts
+		WHERE upload_id = ?
+		ORDER BY part_number`, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var parts []core.MultipartPart
+	for rows.Next() {
+		var part core.MultipartPart
+		if err := rows.Scan(&part.UploadID, &part.PartNumber, &part.ETag, &part.Size, &part.Path, &part.CreatedAt); err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
+	return parts, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteMultipartUpload(ctx context.Context, uploadID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_parts WHERE upload_id = ?`, uploadID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM multipart_uploads WHERE upload_id = ?`, uploadID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func isUniqueConstraint(err error) bool {

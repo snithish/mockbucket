@@ -92,3 +92,73 @@ func TestSessionRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected session round trip: %+v policies=%d", stored, len(policies))
 	}
 }
+
+func TestMultipartUploadLifecycle(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	upload := core.MultipartUpload{
+		UploadID:  "upload-1",
+		Bucket:    "demo",
+		Key:       "multipart.txt",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := metadata.CreateMultipartUpload(ctx, upload); err != nil {
+		t.Fatalf("CreateMultipartUpload() error = %v", err)
+	}
+	part1, err := objects.PutMultipartPart(ctx, upload.UploadID, 1, bytes.NewBufferString("hello "))
+	if err != nil {
+		t.Fatalf("PutMultipartPart(1) error = %v", err)
+	}
+	part2, err := objects.PutMultipartPart(ctx, upload.UploadID, 2, bytes.NewBufferString("world"))
+	if err != nil {
+		t.Fatalf("PutMultipartPart(2) error = %v", err)
+	}
+	if err := metadata.PutMultipartPart(ctx, part1); err != nil {
+		t.Fatalf("PutMultipartPart(metadata-1) error = %v", err)
+	}
+	if err := metadata.PutMultipartPart(ctx, part2); err != nil {
+		t.Fatalf("PutMultipartPart(metadata-2) error = %v", err)
+	}
+	parts, err := metadata.ListMultipartParts(ctx, upload.UploadID)
+	if err != nil {
+		t.Fatalf("ListMultipartParts() error = %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("ListMultipartParts() count = %d, want 2", len(parts))
+	}
+	meta, err := objects.CompleteMultipartUpload(ctx, "demo", "multipart.txt", []core.MultipartPart{part1, part2})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload() error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, meta); err != nil {
+		t.Fatalf("PutObject(metadata) error = %v", err)
+	}
+	reader, _, err := objects.OpenObject(ctx, "demo", "multipart.txt")
+	if err != nil {
+		t.Fatalf("OpenObject() error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(reader); err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if got := buf.String(); got != "hello world" {
+		t.Fatalf("multipart content = %q, want hello world", got)
+	}
+	if err := metadata.DeleteMultipartUpload(ctx, upload.UploadID); err != nil {
+		t.Fatalf("DeleteMultipartUpload() error = %v", err)
+	}
+	_ = objects.AbortMultipartUpload(ctx, upload.UploadID)
+}

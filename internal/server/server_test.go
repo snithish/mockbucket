@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -248,6 +249,79 @@ func TestS3ListObjectsV2(t *testing.T) {
 	if aws.ToString(startAfter.Contents[0].Key) != "logs/2024-02.txt" || aws.ToString(startAfter.Contents[1].Key) != "logs/2024-03.txt" {
 		t.Fatalf("start-after keys = [%s %s], want logs/2024-02.txt logs/2024-03.txt",
 			aws.ToString(startAfter.Contents[0].Key), aws.ToString(startAfter.Contents[1].Key))
+	}
+}
+
+func TestS3MultipartUpload(t *testing.T) {
+	runtime := newTestRuntime(t, true, false)
+	defer func() { _ = runtime.Close() }()
+	svc := newS3Client(t, runtime, "admin", "admin-secret", "")
+	ctx := context.Background()
+
+	createOut, err := svc.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("multipart/data.txt"),
+	})
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload() error = %v", err)
+	}
+	uploadID := aws.ToString(createOut.UploadId)
+	if uploadID == "" {
+		t.Fatal("CreateMultipartUpload() missing upload id")
+	}
+
+	part1Body := bytes.NewReader([]byte("hello "))
+	part1Out, err := svc.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     aws.String("demo"),
+		Key:        aws.String("multipart/data.txt"),
+		UploadId:   aws.String(uploadID),
+		PartNumber: aws.Int32(1),
+		Body:       part1Body,
+	})
+	if err != nil {
+		t.Fatalf("UploadPart(1) error = %v", err)
+	}
+	part2Body := bytes.NewReader([]byte("world"))
+	part2Out, err := svc.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     aws.String("demo"),
+		Key:        aws.String("multipart/data.txt"),
+		UploadId:   aws.String(uploadID),
+		PartNumber: aws.Int32(2),
+		Body:       part2Body,
+	})
+	if err != nil {
+		t.Fatalf("UploadPart(2) error = %v", err)
+	}
+
+	_, err = svc.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String("demo"),
+		Key:      aws.String("multipart/data.txt"),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &s3.CompletedMultipartUpload{
+			Parts: []s3.CompletedPart{
+				{PartNumber: aws.Int32(1), ETag: part1Out.ETag},
+				{PartNumber: aws.Int32(2), ETag: part2Out.ETag},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload() error = %v", err)
+	}
+
+	getOut, err := svc.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("multipart/data.txt"),
+	})
+	if err != nil {
+		t.Fatalf("GetObject() after multipart error = %v", err)
+	}
+	body, err := io.ReadAll(getOut.Body)
+	_ = getOut.Body.Close()
+	if err != nil {
+		t.Fatalf("GetObject() read error = %v", err)
+	}
+	if string(body) != "hello world" {
+		t.Fatalf("multipart object body = %q, want hello world", string(body))
 	}
 }
 

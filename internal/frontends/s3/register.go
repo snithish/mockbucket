@@ -1,6 +1,8 @@
 package s3
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -40,14 +42,22 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	objectHandler := authaws.Authenticate("s3", deps.AWSVerifier, deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
-		switch r.Method {
-		case http.MethodPut:
+		switch {
+		case r.Method == http.MethodPost && hasUploadsQuery(r):
+			handleCreateMultipartUpload(w, r, deps, bucket, key)
+		case r.Method == http.MethodPut && hasUploadIDQuery(r):
+			handleUploadPart(w, r, deps, bucket, key)
+		case r.Method == http.MethodPost && hasUploadIDQuery(r):
+			handleCompleteMultipartUpload(w, r, deps, bucket, key)
+		case r.Method == http.MethodDelete && hasUploadIDQuery(r):
+			handleAbortMultipartUpload(w, r, deps, bucket, key)
+		case r.Method == http.MethodPut:
 			handlePutObject(w, r, deps, bucket, key)
-		case http.MethodGet:
+		case r.Method == http.MethodGet:
 			handleGetObject(w, r, deps, bucket, key)
-		case http.MethodHead:
+		case r.Method == http.MethodHead:
 			handleHeadObject(w, r, deps, bucket, key)
-		case http.MethodDelete:
+		case r.Method == http.MethodDelete:
 			handleDeleteObject(w, r, deps, bucket, key)
 		default:
 			http.NotFound(w, r)
@@ -253,6 +263,210 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	resource := objectResource(bucket, key)
+	if !allow(r, deps, "s3:PutObject", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	uploadID, err := newUploadID()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	upload := core.MultipartUpload{
+		UploadID:  uploadID,
+		Bucket:    bucket,
+		Key:       key,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := deps.Metadata.CreateMultipartUpload(r.Context(), upload); err != nil {
+		writeError(w, err)
+		return
+	}
+	response := struct {
+		XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+		Xmlns    string   `xml:"xmlns,attr"`
+		Bucket   string   `xml:"Bucket"`
+		Key      string   `xml:"Key"`
+		UploadID string   `xml:"UploadId"`
+	}{Xmlns: xmlNamespace, Bucket: bucket, Key: key, UploadID: uploadID}
+	writeXML(w, http.StatusOK, response)
+}
+
+func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	resource := objectResource(bucket, key)
+	if !allow(r, deps, "s3:PutObject", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	partNumber, err := parsePartNumber(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if upload.Bucket != bucket || upload.Key != key {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	part, err := deps.Objects.PutMultipartPart(r.Context(), uploadID, partNumber, r.Body)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := deps.Metadata.PutMultipartPart(r.Context(), part); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("ETag", `"`+part.ETag+`"`)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	resource := objectResource(bucket, key)
+	if !allow(r, deps, "s3:PutObject", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if upload.Bucket != bucket || upload.Key != key {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	var payload struct {
+		Parts []struct {
+			PartNumber int    `xml:"PartNumber"`
+			ETag       string `xml:"ETag"`
+		} `xml:"Part"`
+	}
+	if err := xml.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if len(payload.Parts) == 0 {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	storedParts, err := deps.Metadata.ListMultipartParts(r.Context(), uploadID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	partByNumber := make(map[int]core.MultipartPart, len(storedParts))
+	for _, part := range storedParts {
+		partByNumber[part.PartNumber] = part
+	}
+	ordered := make([]core.MultipartPart, 0, len(payload.Parts))
+	seen := make(map[int]struct{}, len(payload.Parts))
+	for _, reqPart := range payload.Parts {
+		if reqPart.PartNumber <= 0 {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		if _, ok := seen[reqPart.PartNumber]; ok {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		seen[reqPart.PartNumber] = struct{}{}
+		stored, ok := partByNumber[reqPart.PartNumber]
+		if !ok {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		if etag := strings.Trim(reqPart.ETag, `"`); etag != "" && etag != stored.ETag {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		ordered = append(ordered, stored)
+	}
+	meta, err := deps.Objects.CompleteMultipartUpload(r.Context(), bucket, key, ordered)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), uploadID); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = deps.Objects.AbortMultipartUpload(r.Context(), uploadID)
+	response := struct {
+		XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+		Xmlns    string   `xml:"xmlns,attr"`
+		Location string   `xml:"Location"`
+		Bucket   string   `xml:"Bucket"`
+		Key      string   `xml:"Key"`
+		ETag     string   `xml:"ETag"`
+	}{Xmlns: xmlNamespace, Location: "/" + bucket + "/" + key, Bucket: bucket, Key: key, ETag: `"` + meta.ETag + `"`}
+	writeXML(w, http.StatusOK, response)
+}
+
+func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	resource := objectResource(bucket, key)
+	if !allow(r, deps, "s3:AbortMultipartUpload", resource) {
+		writeError(w, core.ErrAccessDenied)
+		return
+	}
+	uploadID := r.URL.Query().Get("uploadId")
+	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if upload.Bucket != bucket || upload.Key != key {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), uploadID); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = deps.Objects.AbortMultipartUpload(r.Context(), uploadID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
 	resource := bucketResource(bucket)
 	if !allow(r, deps, "s3:ListBucket", resource) {
@@ -355,6 +569,15 @@ func hasListObjectsV2Query(r *http.Request) bool {
 	return r.URL.Query().Get("list-type") == "2"
 }
 
+func hasUploadsQuery(r *http.Request) bool {
+	_, ok := r.URL.Query()["uploads"]
+	return ok
+}
+
+func hasUploadIDQuery(r *http.Request) bool {
+	return r.URL.Query().Get("uploadId") != ""
+}
+
 func bucketResource(bucket string) string {
 	return fmt.Sprintf("arn:mockbucket:s3:::%s", bucket)
 }
@@ -404,4 +627,24 @@ func parseMaxKeys(r *http.Request) (int, error) {
 		return 0, core.ErrInvalidArgument
 	}
 	return value, nil
+}
+
+func parsePartNumber(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("partNumber")
+	if raw == "" {
+		return 0, core.ErrInvalidArgument
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	return value, nil
+}
+
+func newUploadID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }

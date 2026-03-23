@@ -74,6 +74,22 @@ type Session struct {
 	CreatedAt     time.Time
 }
 
+type MultipartUpload struct {
+	UploadID  string
+	Bucket    string
+	Key       string
+	CreatedAt time.Time
+}
+
+type MultipartPart struct {
+	UploadID   string
+	PartNumber int
+	ETag       string
+	Size       int64
+	Path       string
+	CreatedAt  time.Time
+}
+
 type CredentialIdentity struct {
 	AccessKeyID   string
 	SecretKey     string
