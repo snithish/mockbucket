@@ -43,6 +43,8 @@
 ## Testing Rules
 - Every behavior change must land with focused tests.
 - Prefer black-box HTTP tests for protocol handlers and direct unit tests for storage/IAM/auth internals.
+- Server-level protocol tests should use the AWS SDK (no custom signing helpers) to
+  validate compatibility, even if they run slower.
 - Run `gofmt -w $(rg --files -g '*.go')` and `go test ./...` before finishing.
 - If dependency resolution is required, use `go mod tidy` and keep `go.mod`/`go.sum` tidy.
 

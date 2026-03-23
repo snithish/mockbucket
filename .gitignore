@@ -1,0 +1,23 @@
+# build
+/bin/
+*.exe
+*.exe~
+*.test
+*.out
+
+# runtime
+/var/
+/mockbucket.db
+
+# editor
+.DS_Store
+.idea/
+.vscode/
+
+# go
+/cover.out
+*.prof
+
+# local config overrides
+mockbucket.local.yaml
+seed.local.yaml
