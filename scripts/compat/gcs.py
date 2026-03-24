@@ -75,6 +75,7 @@ def run() -> int:
     errors = 0
     errors += _test_buckets()
     errors += _test_objects()
+    errors += _test_multipart()
     return errors
 
 
@@ -136,4 +137,36 @@ def _test_objects() -> int:
         return 1
 
     ok("gcs objects")
+    return 0
+
+
+def _test_multipart() -> int:
+    """Test multipart upload via google-resumable-media."""
+    from google.auth.transport.requests import AuthorizedSession
+    from google.resumable_media.requests import MultipartUpload
+
+    creds = SeedCredentials()
+    transport = AuthorizedSession(creds)
+
+    key = "compat/multipart-test.txt"
+    upload_url = f"{ENDPOINT}/upload/storage/v1/b/compat-demo/o?uploadType=multipart"
+
+    upload = MultipartUpload(upload_url)
+    data = b"part-one-part-two-"
+    metadata = {"name": key}
+    resp = upload.transmit(transport, data, metadata, "application/octet-stream")
+
+    if resp.status_code >= 400:
+        fail(f"gcs multipart — upload failed: status={resp.status_code} body={resp.text}")
+        return 1
+
+    # Verify the assembled object.
+    client = _make_client()
+    blob = client.bucket("compat-demo").blob(key)
+    content = blob.download_as_bytes()
+    if content != data:
+        fail(f"gcs multipart — content={content!r}, want {data!r}")
+        return 1
+
+    ok("gcs multipart")
     return 0

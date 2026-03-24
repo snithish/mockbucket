@@ -31,6 +31,7 @@ def run() -> int:
     errors = 0
     errors += _test_awscli()
     errors += _test_boto3()
+    errors += _test_multipart()
     return errors
 
 
@@ -106,4 +107,54 @@ def _test_boto3() -> int:
         return 1
 
     ok("boto3")
+    return 0
+
+
+def _test_multipart() -> int:
+    import boto3
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name=os.environ["AWS_REGION"],
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    )
+
+    # Create a multipart upload.
+    create = s3.create_multipart_upload(Bucket="demo", Key="compat/multipart.txt")
+    upload_id = create["UploadId"]
+
+    parts = []
+    bodies = [b"part-one-", b"part-two-"]
+    try:
+        for i, body in enumerate(bodies):
+            part = s3.upload_part(
+                Bucket="demo",
+                Key="compat/multipart.txt",
+                UploadId=upload_id,
+                PartNumber=i + 1,
+                Body=body,
+            )
+            parts.append({"ETag": part["ETag"], "PartNumber": i + 1})
+
+        s3.complete_multipart_upload(
+            Bucket="demo",
+            Key="compat/multipart.txt",
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+    except Exception:
+        s3.abort_multipart_upload(Bucket="demo", Key="compat/multipart.txt", UploadId=upload_id)
+        fail("boto3 multipart — upload failed")
+        return 1
+
+    # Verify the assembled object.
+    obj = s3.get_object(Bucket="demo", Key="compat/multipart.txt")
+    content = obj["Body"].read()
+    if content != b"part-one-part-two-":
+        fail(f"boto3 multipart — content={content!r}, want b'part-one-part-two-'")
+        return 1
+
+    ok("boto3 multipart")
     return 0
