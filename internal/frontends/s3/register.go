@@ -204,7 +204,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	defer func() { _ = reader.Close() }()
-	setObjectHeaders(w, meta)
+	setObjectHeadersWithLength(w, meta)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, reader)
@@ -235,7 +235,7 @@ func handleHeadObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 		return
 	}
 	_ = reader.Close()
-	setObjectHeaders(w, meta)
+	setObjectHeadersWithLength(w, meta)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -599,11 +599,15 @@ func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {
 	if meta.ETag != "" {
 		w.Header().Set("ETag", "\""+meta.ETag+"\"")
 	}
-	if meta.Size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
-	}
 	if !meta.ModifiedAt.IsZero() {
 		w.Header().Set("Last-Modified", meta.ModifiedAt.UTC().Format(http.TimeFormat))
+	}
+}
+
+func setObjectHeadersWithLength(w http.ResponseWriter, meta core.ObjectMetadata) {
+	setObjectHeaders(w, meta)
+	if meta.Size >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	}
 }
 

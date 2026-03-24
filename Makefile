@@ -16,7 +16,7 @@ help:
 	@printf "  test    Run the Go test suite\n"
 	@printf "  fmt     Run gofmt over tracked Go files\n"
 	@printf "  tidy    Run go mod tidy\n"
-	@printf "  compat  Execute the compatibility scripts (scripts/compat/run_all.sh)\n"
+	@printf "  compat  Execute the compatibility tests (uv run python scripts/compat/run_all.py)\n"
 	@printf "  clean   Remove $(BIN_DIR)\n"
 
 build: $(BIN_DIR)/$(BINARY)
@@ -38,7 +38,7 @@ tidy:
 	@$(GO) mod tidy
 
 compat:
-	@scripts/compat/run_all.sh
+	@uv run python scripts/compat/run_all.py
 
 clean:
 	@rm -rf $(BIN_DIR)
