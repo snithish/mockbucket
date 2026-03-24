@@ -1,0 +1,43 @@
+name: gate
+
+on:
+  workflow_call:
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build mockbucketd
+        run: go build -o ./bin/mockbucketd ./cmd/mockbucketd
+
+      - name: Compat tests
+        run: uv run scripts/compat/run_all.py test
+
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build -o /dev/null ./cmd/mockbucketd
+
+      - name: Test
+        run: go test -race -count=1 ./...

@@ -10,33 +10,11 @@ permissions:
   security-events: write
 
 jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version-file: go.mod
-
-      - name: Check formatting
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "Files not formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Build
-        run: go build -o /dev/null ./cmd/mockbucketd
-
-      - name: Test
-        run: go test -race -count=1 ./...
+  gate:
+    uses: ./.github/workflows/gate.yaml
 
   docker-scan:
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -46,7 +24,7 @@ jobs:
         run: docker build -t mockbucket:ci .
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@57a97c7 # v0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: 'mockbucket:ci'
           format: sarif
@@ -60,7 +38,7 @@ jobs:
           sarif_file: trivy-results.sarif
 
       - name: Fail on CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7 # v0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: 'mockbucket:ci'
           format: table
