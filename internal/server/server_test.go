@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	mbconfig "github.com/snithish/mockbucket/internal/config"
 )
@@ -56,21 +56,22 @@ func newTestRuntime(t *testing.T, configure func(*mbconfig.Config)) *Runtime {
 func baseConfig(t *testing.T) mbconfig.Config {
 	t.Helper()
 	dir := t.TempDir()
-	seedPath := filepath.Join(dir, "seed.yaml")
-	if err := osWriteFile(seedPath, []byte(defaultTestSeedYAML)); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
 	cfg := mbconfig.Default()
-	cfg.Storage.RootDir = filepath.Join(dir, "objects")
-	cfg.Storage.SQLitePath = filepath.Join(dir, "mockbucket.db")
-	cfg.Seed.Path = seedPath
+	cfg.Storage.RootDir = dir + "/objects"
+	cfg.Storage.SQLitePath = dir + "/mockbucket.db"
 	cfg.Server.RequestLog = false
 	cfg.Server.ShutdownTimeout = time.Second
+	if err := yaml.Unmarshal([]byte(defaultTestSeedYAML), &cfg.Seed); err != nil {
+		t.Fatalf("parse seed: %v", err)
+	}
 	return cfg
 }
 
-func osWriteFile(path string, data []byte) error {
-	return os.WriteFile(path, data, 0o644)
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(p))
+	return len(p), nil
 }
 
 const defaultTestSeedYAML = `buckets:
@@ -88,10 +89,3 @@ s3:
       secret: admin-secret
       principal: admin
 `
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Log(string(p))
-	return len(p), nil
-}

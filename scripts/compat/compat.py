@@ -54,15 +54,45 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 PORT = int(os.environ.get("MOCKBUCKET_PORT", "19000"))
 ENDPOINT = f"http://127.0.0.1:{PORT}"
 
+_DEFAULT_SEED = """\
+buckets:
+  - demo
+principals:
+  - name: admin
+    policies:
+      - statements:
+          - effect: Allow
+            actions: ["*"]
+            resources: ["*"]
+roles:
+  - name: data-reader
+    trust:
+      statements:
+        - effect: Allow
+          principals: ["admin"]
+          actions: ["sts:AssumeRole"]
+    policies:
+      - statements:
+          - effect: Allow
+            actions: ["s3:GetObject", "s3:ListBucket"]
+            resources: ["arn:mockbucket:s3:::demo", "arn:mockbucket:s3:::demo/*"]
+s3:
+  access_keys:
+    - id: admin
+      secret: admin-secret
+      principal: admin
+objects:
+  - bucket: demo
+    key: bootstrap/hello.txt
+    content: hello from mockbucket
+"""
+
 
 def _write_config(tmp_dir: Path, frontends: dict[str, bool], seed: str | None = None) -> Path:
     cfg = tmp_dir / "mockbucket.yaml"
-    if seed is not None:
-        seed_file = tmp_dir / "seed.yaml"
-        seed_file.write_text(seed)
-        seed_path = str(seed_file)
-    else:
-        seed_path = f"{ROOT}/seed.example.yaml"
+    if seed is None:
+        seed = _DEFAULT_SEED
+    indented = "\n".join("  " + line if line.strip() else "" for line in seed.splitlines())
     cfg.write_text(f"""\
 server:
   address: 127.0.0.1:{PORT}
@@ -71,8 +101,6 @@ server:
 storage:
   root_dir: {tmp_dir}/objects
   sqlite_path: {tmp_dir}/mockbucket.db
-seed:
-  path: {seed_path}
 frontends:
   s3: {"true" if frontends.get("s3") else "false"}
   sts: {"true" if frontends.get("sts") else "false"}
@@ -80,6 +108,8 @@ frontends:
   azure: false
 auth:
   session_duration: 1h
+seed:
+{indented}
 """)
     return cfg
 

@@ -125,7 +125,6 @@ services:
     volumes:
       - mockbucket-data:/var/data
       - ./mockbucket.yaml:/etc/mockbucket/config.yaml:ro
-      - ./seed.yaml:/etc/mockbucket/seed.yaml:ro
     command: ["--config", "/etc/mockbucket/config.yaml"]
     healthcheck:
       test: ["CMD", "/mockbucketd", "--healthz"]
@@ -182,9 +181,24 @@ storage:
 
 ### Seed
 
+Seed data is defined inline under the `seed:` key. See `mockbucket.example.yaml` for a complete reference.
+
 ```yaml
 seed:
-  path: ./seed.example.yaml   # path to seed data (buckets, principals, roles, objects)
+  buckets:
+    - my-bucket
+  principals:
+    - name: admin
+      policies:
+        - statements:
+            - effect: Allow
+              actions: ["*"]
+              resources: ["*"]
+  s3:
+    access_keys:
+      - id: admin
+        secret: admin-secret
+        principal: admin
 ```
 
 ### Frontends
@@ -216,7 +230,7 @@ auth:
 
 ## Seeding State
 
-The seed file defines the entire initial state of MockBucket. See `seed.example.yaml` for a complete reference.
+The `seed:` section of the config file defines the entire initial state of MockBucket. See `mockbucket.example.yaml` for a complete reference.
 
 ### Buckets
 
@@ -424,7 +438,7 @@ internal/
   auth/                   -- request authentication
     aws/                  -- SigV4 verification, bearer tokens
   iam/                    -- policy evaluation, trust model, sessions
-  seed/                   -- seed parser, validator, bootstrapper
+  seed/                   -- seed validation, bootstrapping
   frontends/              -- protocol adapters
     s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
     sts/                  -- STS wire protocol (AssumeRole)

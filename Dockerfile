@@ -18,7 +18,6 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /mockbucketd /mockbucketd
 COPY docker/config.yaml /etc/mockbucket/config.yaml
-COPY seed.example.yaml /etc/mockbucket/seed.yaml
 
 EXPOSE 9000
 

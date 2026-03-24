@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/snithish/mockbucket/internal/core"
 )
 
 type Config struct {
 	Server    ServerConfig   `yaml:"server"`
 	Storage   StorageConfig  `yaml:"storage"`
-	Seed      SeedConfig     `yaml:"seed"`
+	Seed      SeedData       `yaml:"seed"`
 	Frontends FrontendConfig `yaml:"frontends"`
 	Auth      AuthConfig     `yaml:"auth"`
 }
@@ -30,8 +32,33 @@ type StorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
 }
 
-type SeedConfig struct {
-	Path string `yaml:"path"`
+type SeedData struct {
+	Buckets    []string         `yaml:"buckets"`
+	Principals []core.Principal `yaml:"principals"`
+	Roles      []core.Role      `yaml:"roles"`
+	Objects    []SeedObject     `yaml:"objects"`
+	S3         SeedS3Config     `yaml:"s3"`
+	GCS        SeedGCSConfig    `yaml:"gcs"`
+}
+
+type SeedObject struct {
+	Bucket  string `yaml:"bucket"`
+	Key     string `yaml:"key"`
+	Content string `yaml:"content"`
+}
+
+type SeedS3Config struct {
+	AccessKeys []SeedS3AccessKey `yaml:"access_keys"`
+}
+
+type SeedS3AccessKey struct {
+	ID        string `yaml:"id"`
+	Secret    string `yaml:"secret"`
+	Principal string `yaml:"principal"`
+}
+
+type SeedGCSConfig struct {
+	Accounts []core.ServiceAccount `yaml:"accounts"`
 }
 
 type FrontendConfig struct {
@@ -56,7 +83,6 @@ func Default() Config {
 			RootDir:    "./var/objects",
 			SQLitePath: "./var/mockbucket.db",
 		},
-		Seed: SeedConfig{Path: "./seed.yaml"},
 		Auth: AuthConfig{SessionDuration: time.Hour},
 	}
 }
@@ -66,13 +92,16 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	return Parse(filepath.Dir(path), raw)
+}
 
+func Parse(baseDir string, raw []byte) (Config, error) {
 	cfg := Default()
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 
-	cfg.resolveRelativePaths(filepath.Dir(path))
+	cfg.resolveRelativePaths(baseDir)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -86,9 +115,6 @@ func (c *Config) resolveRelativePaths(baseDir string) {
 	}
 	if !filepath.IsAbs(c.Storage.SQLitePath) {
 		c.Storage.SQLitePath = filepath.Clean(filepath.Join(baseDir, c.Storage.SQLitePath))
-	}
-	if c.Seed.Path != "" && !filepath.IsAbs(c.Seed.Path) {
-		c.Seed.Path = filepath.Clean(filepath.Join(baseDir, c.Seed.Path))
 	}
 }
 

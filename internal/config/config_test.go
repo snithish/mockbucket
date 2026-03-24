@@ -9,7 +9,7 @@ import (
 func TestLoadResolvesRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mockbucket.yaml")
-	raw := []byte("server:\n  address: 127.0.0.1:9000\nstorage:\n  root_dir: ./objects\n  sqlite_path: ./mockbucket.db\nseed:\n  path: ./seed.yaml\nauth:\n  session_duration: 30m\n")
+	raw := []byte("server:\n  address: 127.0.0.1:9000\nstorage:\n  root_dir: ./objects\n  sqlite_path: ./mockbucket.db\nauth:\n  session_duration: 30m\n")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -22,9 +22,6 @@ func TestLoadResolvesRelativePaths(t *testing.T) {
 	}
 	if got, want := cfg.Storage.SQLitePath, filepath.Join(dir, "mockbucket.db"); got != want {
 		t.Fatalf("sqlite path = %q, want %q", got, want)
-	}
-	if got, want := cfg.Seed.Path, filepath.Join(dir, "seed.yaml"); got != want {
-		t.Fatalf("seed path = %q, want %q", got, want)
 	}
 }
 

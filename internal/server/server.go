@@ -13,6 +13,7 @@ import (
 
 	authaws "github.com/snithish/mockbucket/internal/auth/aws"
 	"github.com/snithish/mockbucket/internal/config"
+	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/httpx"
@@ -45,10 +46,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	if err != nil {
 		return nil, err
 	}
-	doc, err := seed.Load(cfg.Seed.Path)
-	if err != nil {
+	doc := seedDocument(cfg.Seed)
+	if err := doc.Validate(); err != nil {
 		_ = metadata.Close()
-		return nil, err
+		return nil, fmt.Errorf("validate seed: %w", err)
 	}
 	if err := seed.Apply(ctx, doc, metadata, objects); err != nil {
 		_ = metadata.Close()
@@ -137,7 +138,7 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 				Azure bool `json:"azure"`
 			} `json:"frontends"`
 			Seed struct {
-				Path string `json:"path"`
+				Buckets int `json:"buckets"`
 			} `json:"seed"`
 		}{
 			OK: true,
@@ -153,7 +154,7 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 		details.Frontends.STS = cfg.Frontends.STS
 		details.Frontends.GCS = cfg.Frontends.GCS
 		details.Frontends.Azure = cfg.Frontends.Azure
-		details.Seed.Path = cfg.Seed.Path
+		details.Seed.Buckets = len(cfg.Seed.Buckets)
 
 		status := http.StatusOK
 		if !details.OK {
@@ -163,4 +164,34 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(details)
 	})
+}
+
+func seedDocument(s config.SeedData) seed.Document {
+	doc := seed.Document{
+		Buckets:    append([]string(nil), s.Buckets...),
+		Principals: append([]core.Principal(nil), s.Principals...),
+		Roles:      append([]core.Role(nil), s.Roles...),
+		Objects:    make([]seed.ObjectSeed, 0, len(s.Objects)),
+		S3: seed.S3SeedConfig{
+			AccessKeys: make([]seed.S3AccessKeySeed, 0, len(s.S3.AccessKeys)),
+		},
+		GCS: seed.GCSSeedConfig{
+			Accounts: append([]core.ServiceAccount(nil), s.GCS.Accounts...),
+		},
+	}
+	for _, o := range s.Objects {
+		doc.Objects = append(doc.Objects, seed.ObjectSeed{
+			Bucket:  o.Bucket,
+			Key:     o.Key,
+			Content: o.Content,
+		})
+	}
+	for _, k := range s.S3.AccessKeys {
+		doc.S3.AccessKeys = append(doc.S3.AccessKeys, seed.S3AccessKeySeed{
+			ID:        k.ID,
+			Secret:    k.Secret,
+			Principal: k.Principal,
+		})
+	}
+	return doc
 }

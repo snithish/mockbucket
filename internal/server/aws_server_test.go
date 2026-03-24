@@ -16,6 +16,8 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"gopkg.in/yaml.v3"
+
 	mbconfig "github.com/snithish/mockbucket/internal/config"
 )
 
@@ -198,8 +200,8 @@ func newAWSTestRuntime(t *testing.T, enableSTS bool) *Runtime {
 		cfg.Frontends.S3 = true
 		cfg.Frontends.STS = enableSTS
 		if enableSTS {
-			if err := osWriteFile(cfg.Seed.Path, []byte(awsSTSTestSeedYAML)); err != nil {
-				t.Fatalf("write sts seed: %v", err)
+			if err := yaml.Unmarshal([]byte(awsSTSTestSeedYAML), &cfg.Seed); err != nil {
+				t.Fatalf("parse sts seed: %v", err)
 			}
 		}
 	})
