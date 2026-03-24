@@ -28,10 +28,11 @@ All Python work in this project uses `uv`. Never install packages globally or wi
 Use `uv run` to execute scripts and `uv pip` to manage dependencies within the project's virtual environment.
 
 ```sh
-uv run python scripts/compat/run_all.py serve      # start server for manual testing
-uv run python scripts/compat/run_all.py test       # run all compat tests (default)
-uv run python scripts/compat/run_all.py --debug    # verbose HTTP logging
-uv pip install boto3                                # install a dependency into the project venv
+uv run scripts/compat/run_all.py serve          # start server for manual testing
+uv run scripts/compat/run_all.py test           # run all cloud tests (default)
+uv run scripts/compat/run_all.py test aws       # run AWS S3/STS tests only
+uv run scripts/compat/run_all.py test gcs       # run GCS tests only
+uv run scripts/compat/run_all.py --debug test   # verbose HTTP logging
 ```
 
 ## Architecture

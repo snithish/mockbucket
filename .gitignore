@@ -21,3 +21,8 @@
 # local config overrides
 mockbucket.local.yaml
 seed.local.yaml
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo

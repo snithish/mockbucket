@@ -45,6 +45,11 @@ type MetadataStore interface {
 	PutMultipartPart(ctx context.Context, part core.MultipartPart) error
 	ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error)
 	DeleteMultipartUpload(ctx context.Context, uploadID string) error
+	UpsertServiceAccount(ctx context.Context, sa core.ServiceAccount) error
+	FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, []core.PolicyDocument, error)
+	FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error)
+	ListServiceAccounts(ctx context.Context) ([]core.ServiceAccount, error)
+	DeleteServiceAccounts(ctx context.Context) error
 	Close() error
 }
 
@@ -53,10 +58,18 @@ type SQLiteStore struct {
 }
 
 type SeedState struct {
-	Buckets    []string
-	Principals []core.Principal
-	Roles      []core.Role
-	Objects    []SeedObject
+	Buckets         []string
+	Principals      []core.Principal
+	Roles           []core.Role
+	Objects         []SeedObject
+	AccessKeys      []SeedAccessKey
+	ServiceAccounts []core.ServiceAccount
+}
+
+type SeedAccessKey struct {
+	ID        string
+	Secret    string
+	Principal string
 }
 
 type SeedObject struct {
@@ -119,10 +132,15 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 		if err != nil {
 			return err
 		}
+		existingSAs, err := listServiceAccounts(ctx, tx)
+		if err != nil {
+			return err
+		}
 
 		desiredPrincipals := map[string]struct{}{}
 		desiredRoles := map[string]struct{}{}
 		desiredKeys := map[string]struct{}{}
+		desiredTokens := map[string]struct{}{}
 
 		for _, bucket := range state.Buckets {
 			if err := createBucket(ctx, tx, bucket); err != nil && !errors.Is(err, core.ErrConflict) {
@@ -131,10 +149,13 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 		}
 		for _, principal := range state.Principals {
 			desiredPrincipals[principal.Name] = struct{}{}
-			for _, key := range principal.AccessKeys {
-				desiredKeys[key.ID] = struct{}{}
-			}
 			if err := upsertPrincipal(ctx, tx, principal); err != nil {
+				return err
+			}
+		}
+		for _, key := range state.AccessKeys {
+			desiredKeys[key.ID] = struct{}{}
+			if err := upsertAccessKey(ctx, tx, key.ID, key.Secret, key.Principal); err != nil {
 				return err
 			}
 		}
@@ -144,11 +165,25 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 				return err
 			}
 		}
+		for _, sa := range state.ServiceAccounts {
+			desiredTokens[sa.Token] = struct{}{}
+			if err := upsertServiceAccount(ctx, tx, sa); err != nil {
+				return err
+			}
+		}
 		for _, key := range existingKeys {
 			if _, ok := desiredKeys[key.ID]; ok {
 				continue
 			}
 			if err := deleteAccessKey(ctx, tx, key.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+				return err
+			}
+		}
+		for _, sa := range existingSAs {
+			if _, ok := desiredTokens[sa.Token]; ok {
+				continue
+			}
+			if err := deleteServiceAccount(ctx, tx, sa.Token); err != nil && !errors.Is(err, core.ErrNotFound) {
 				return err
 			}
 		}
@@ -235,6 +270,12 @@ func (s *SQLiteStore) initSchema() error {
 			PRIMARY KEY (upload_id, part_number)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_multipart_parts_upload_id ON multipart_parts(upload_id);`,
+		`CREATE TABLE IF NOT EXISTS service_accounts (
+			token TEXT PRIMARY KEY,
+			client_email TEXT NOT NULL,
+			principal_name TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		);`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -381,6 +422,55 @@ func (s *SQLiteStore) DeleteRole(ctx context.Context, name string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		return deleteRole(ctx, tx, name)
 	})
+}
+
+func (s *SQLiteStore) UpsertServiceAccount(ctx context.Context, sa core.ServiceAccount) error {
+	return upsertServiceAccount(ctx, s.db, sa)
+}
+
+func (s *SQLiteStore) FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, []core.PolicyDocument, error) {
+	var sa core.ServiceAccount
+	var policiesJSON string
+	row := s.db.QueryRowContext(ctx, `
+		SELECT sa.token, sa.client_email, sa.principal_name, p.policies_json
+		FROM service_accounts sa
+		JOIN principals p ON p.name = sa.principal_name
+		WHERE sa.token = ?`, token)
+	if err := row.Scan(&sa.Token, &sa.ClientEmail, &sa.Principal, &policiesJSON); err != nil {
+		if err == sql.ErrNoRows {
+			return core.ServiceAccount{}, nil, core.ErrNotFound
+		}
+		return core.ServiceAccount{}, nil, err
+	}
+	var policies []core.PolicyDocument
+	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
+		return core.ServiceAccount{}, nil, err
+	}
+	return sa, policies, nil
+}
+
+func (s *SQLiteStore) FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error) {
+	var sa core.ServiceAccount
+	row := s.db.QueryRowContext(ctx, `
+		SELECT token, client_email, principal_name
+		FROM service_accounts
+		WHERE client_email = ?`, email)
+	if err := row.Scan(&sa.Token, &sa.ClientEmail, &sa.Principal); err != nil {
+		if err == sql.ErrNoRows {
+			return core.ServiceAccount{}, core.ErrNotFound
+		}
+		return core.ServiceAccount{}, err
+	}
+	return sa, nil
+}
+
+func (s *SQLiteStore) ListServiceAccounts(ctx context.Context) ([]core.ServiceAccount, error) {
+	return listServiceAccounts(ctx, s.db)
+}
+
+func (s *SQLiteStore) DeleteServiceAccounts(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM service_accounts`)
+	return err
 }
 
 func (s *SQLiteStore) FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, []core.PolicyDocument, error) {
@@ -605,24 +695,21 @@ func upsertPrincipal(ctx context.Context, runner sqlRunner, principal core.Princ
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if _, err := runner.ExecContext(ctx, `
+	_, err = runner.ExecContext(ctx, `
 		INSERT INTO principals(name, policies_json, created_at) VALUES(?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET policies_json = excluded.policies_json`,
-		principal.Name, string(policiesJSON), now,
-	); err != nil {
-		return err
-	}
-	for _, key := range principal.AccessKeys {
-		if _, err := runner.ExecContext(ctx, `
-			INSERT INTO access_keys(id, secret, principal_name, created_at) VALUES(?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, principal_name = excluded.principal_name`,
-			key.ID, key.Secret, principal.Name, now,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
+		principal.Name, string(policiesJSON), time.Now().UTC(),
+	)
+	return err
+}
+
+func upsertAccessKey(ctx context.Context, runner sqlRunner, id, secret, principal string) error {
+	_, err := runner.ExecContext(ctx, `
+		INSERT INTO access_keys(id, secret, principal_name, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET secret = excluded.secret, principal_name = excluded.principal_name`,
+		id, secret, principal, time.Now().UTC(),
+	)
+	return err
 }
 
 func upsertRole(ctx context.Context, runner sqlRunner, role core.Role) error {
@@ -709,6 +796,9 @@ func deletePrincipal(ctx context.Context, runner sqlRunner, name string) error {
 	if _, err := runner.ExecContext(ctx, `DELETE FROM access_keys WHERE principal_name = ?`, name); err != nil {
 		return err
 	}
+	if _, err := runner.ExecContext(ctx, `DELETE FROM service_accounts WHERE principal_name = ?`, name); err != nil {
+		return err
+	}
 	if _, err := runner.ExecContext(ctx, `DELETE FROM sessions WHERE principal_name = ?`, name); err != nil {
 		return err
 	}
@@ -736,4 +826,42 @@ func deleteRole(ctx context.Context, runner sqlRunner, name string) error {
 		return core.ErrNotFound
 	}
 	return nil
+}
+
+func upsertServiceAccount(ctx context.Context, runner sqlRunner, sa core.ServiceAccount) error {
+	_, err := runner.ExecContext(ctx, `
+		INSERT INTO service_accounts(token, client_email, principal_name, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(token) DO UPDATE SET client_email = excluded.client_email, principal_name = excluded.principal_name`,
+		sa.Token, sa.ClientEmail, sa.Principal, time.Now().UTC(),
+	)
+	return err
+}
+
+func deleteServiceAccount(ctx context.Context, runner sqlRunner, token string) error {
+	res, err := runner.ExecContext(ctx, `DELETE FROM service_accounts WHERE token = ?`, token)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrNotFound
+	}
+	return nil
+}
+
+func listServiceAccounts(ctx context.Context, runner sqlRunner) ([]core.ServiceAccount, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT token, client_email, principal_name FROM service_accounts ORDER BY token`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sas []core.ServiceAccount
+	for rows.Next() {
+		var sa core.ServiceAccount
+		if err := rows.Scan(&sa.Token, &sa.ClientEmail, &sa.Principal); err != nil {
+			return nil, err
+		}
+		sas = append(sas, sa)
+	}
+	return sas, rows.Err()
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +14,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
@@ -25,6 +25,150 @@ import (
 
 func TestGCSFrontendContract(t *testing.T) {
 	runFrontendContractTests(t, newGCSContractClient)
+}
+
+func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.GCS = true
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	// Create a role for service accounts.
+	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
+		Name: "gcs-service-account",
+		Trust: core.TrustPolicyDocument{
+			Statements: []core.TrustStatement{{
+				Effect:     core.EffectAllow,
+				Principals: []string{"*"},
+				Actions:    []string{"sts:AssumeRole"},
+			}},
+		},
+		Policies: []core.PolicyDocument{{
+			Statements: []core.PolicyStatement{{
+				Effect:    core.EffectAllow,
+				Actions:   []string{"*"},
+				Resources: []string{"*"},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+
+	// Create a service account for the client.
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: "sa@mock.iam.gserviceaccount.com",
+		Principal:   "admin",
+		Token:       "static-sa-token",
+	}); err != nil {
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
+	}
+
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	// Exchange client credentials for a token.
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", "sa@mock.iam.gserviceaccount.com")
+	resp, err := http.Post(server.URL+"/oauth2/v4/token", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("POST /oauth2/v4/token error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /oauth2/v4/token status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	if tok.AccessToken == "" || tok.TokenType != "Bearer" {
+		t.Fatalf("unexpected token response: %+v", tok)
+	}
+
+	// Use the token to list buckets.
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/storage/v1/b", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	listResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /storage/v1/b error = %v", err)
+	}
+	defer listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list buckets status = %d, want %d", listResp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.GCS = true
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
+		Name: "gcs-service-account",
+		Trust: core.TrustPolicyDocument{
+			Statements: []core.TrustStatement{{
+				Effect:     core.EffectAllow,
+				Principals: []string{"*"},
+				Actions:    []string{"sts:AssumeRole"},
+			}},
+		},
+		Policies: []core.PolicyDocument{{
+			Statements: []core.PolicyStatement{{
+				Effect:    core.EffectAllow,
+				Actions:   []string{"*"},
+				Resources: []string{"*"},
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+	// Create a service account for the client.
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: "sa@mock.iam.gserviceaccount.com",
+		Principal:   "admin",
+		Token:       "static-jwt-token",
+	}); err != nil {
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
+	}
+
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	// Build a JWT assertion with iss claim.
+	claims := `{"iss":"sa@mock.iam.gserviceaccount.com","aud":"` + server.URL + `/oauth2/v4/token"}`
+	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
+	assertion := "eyJhbGciOiJSUzI1NiJ9." + payload + ".fakesig"
+
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	form.Set("assertion", assertion)
+	resp, err := http.Post(server.URL+"/oauth2/v4/token", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("POST /oauth2/v4/token error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /oauth2/v4/token status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	if tok.AccessToken == "" {
+		t.Fatal("access_token is empty")
+	}
 }
 
 type gcsContractClient struct {
@@ -41,39 +185,22 @@ func newGCSContractClient(t *testing.T) frontendContractClient {
 	})
 	t.Cleanup(func() { _ = runtime.Close() })
 
-	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
-		Name: "gcs-admin",
-		Policies: []core.PolicyDocument{{
-			Statements: []core.PolicyStatement{{
-				Effect:    core.EffectAllow,
-				Actions:   []string{"*"},
-				Resources: []string{"*"},
-			}},
-		}},
+	// Create a service account for static token auth.
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: "contract@mock.iam.gserviceaccount.com",
+		Principal:   "admin",
+		Token:       "gcs-contract-token",
 	}); err != nil {
-		t.Fatalf("UpsertRole() error = %v", err)
-	}
-	session := core.Session{
-		Token:         "gcs-token",
-		AccessKeyID:   "gcs-access",
-		SecretKey:     "gcs-secret",
-		PrincipalName: "admin",
-		RoleName:      "gcs-admin",
-		SessionName:   "gcs",
-		CreatedAt:     time.Now().UTC(),
-		ExpiresAt:     time.Now().UTC().Add(time.Hour),
-	}
-	if err := runtime.Metadata.CreateSession(context.Background(), session); err != nil {
-		t.Fatalf("CreateSession() error = %v", err)
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
 	}
 
 	server := httptest.NewServer(runtime.HTTPServer.Handler)
 	t.Cleanup(server.Close)
 
-	client := newGCSClient(t, server.URL, session.Token)
+	client := newGCSClient(t, server.URL, "gcs-contract-token")
 	t.Cleanup(func() { _ = client.Close() })
 
-	return &gcsContractClient{client: client, endpoint: server.URL, projectID: "mock-project", token: session.Token}
+	return &gcsContractClient{client: client, endpoint: server.URL, projectID: "mock-project", token: "gcs-contract-token"}
 }
 
 func (c *gcsContractClient) CreateBucket(ctx context.Context, bucket string) error {

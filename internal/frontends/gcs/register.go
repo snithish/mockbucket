@@ -100,6 +100,7 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	mux.Handle(bucketsBasePath+"/{bucket}/o/{object...}", objectHandler)
 	mux.Handle(downloadBasePath+"/{bucket}/o/{object...}", downloadHandler)
 	mux.Handle(uploadBasePath+"/{bucket}/o", uploadHandler)
+	mux.HandleFunc("/oauth2/v4/token", authgcp.TokenEndpoint(deps.AuthResolver, deps.SessionManager))
 	if !cfg.Frontends.S3 {
 		mux.Handle("/{bucket}/{object...}", authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {

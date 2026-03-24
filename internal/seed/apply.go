@@ -21,5 +21,13 @@ func Apply(ctx context.Context, doc Document, metadata *storage.SQLiteStore, obj
 			Content: object.Content,
 		})
 	}
+	for _, key := range doc.S3.AccessKeys {
+		state.AccessKeys = append(state.AccessKeys, storage.SeedAccessKey{
+			ID:        key.ID,
+			Secret:    key.Secret,
+			Principal: key.Principal,
+		})
+	}
+	state.ServiceAccounts = append([]core.ServiceAccount(nil), doc.GCS.Accounts...)
 	return metadata.ApplySeedState(ctx, state, objects)
 }

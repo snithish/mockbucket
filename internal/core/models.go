@@ -52,9 +52,8 @@ type AccessKey struct {
 }
 
 type Principal struct {
-	Name       string           `json:"name" yaml:"name"`
-	Policies   []PolicyDocument `json:"policies" yaml:"policies"`
-	AccessKeys []AccessKey      `json:"access_keys" yaml:"access_keys"`
+	Name     string           `json:"name" yaml:"name"`
+	Policies []PolicyDocument `json:"policies" yaml:"policies"`
 }
 
 type Role struct {
@@ -109,4 +108,10 @@ func (s Subject) Name() string {
 		return s.RoleName
 	}
 	return s.PrincipalName
+}
+
+type ServiceAccount struct {
+	ClientEmail string `json:"client_email" yaml:"client_email"`
+	Principal   string `json:"principal" yaml:"principal"`
+	Token       string `json:"token" yaml:"token"`
 }

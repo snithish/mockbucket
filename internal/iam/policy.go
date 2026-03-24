@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
 
@@ -117,6 +118,15 @@ func (r Resolver) ResolveAccessKey(ctx context.Context, accessKeyID string) (cor
 }
 
 func (r Resolver) ResolveBearerToken(ctx context.Context, token string) (core.Subject, error) {
+	// Try static service account token first.
+	sa, policies, err := r.Store.FindServiceAccountByToken(ctx, token)
+	if err == nil {
+		return core.Subject{PrincipalName: sa.Principal, Policies: policies}, nil
+	}
+	if !errors.Is(err, core.ErrNotFound) {
+		return core.Subject{}, err
+	}
+	// Fall back to session-based tokens.
 	return r.SessionManager.ResolveSession(ctx, token)
 }
 

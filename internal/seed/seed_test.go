@@ -47,11 +47,12 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 		Buckets: []string{"demo"},
 		Principals: []core.Principal{{
 			Name: "admin",
-			AccessKeys: []core.AccessKey{{
-				ID:     "admin",
-				Secret: "secret",
-			}},
 		}},
+		S3: S3SeedConfig{AccessKeys: []S3AccessKeySeed{{
+			ID:        "admin",
+			Secret:    "secret",
+			Principal: "admin",
+		}}},
 		Roles: []core.Role{{Name: "reader"}},
 		Objects: []ObjectSeed{
 			{Bucket: "demo", Key: "a.txt", Content: "a"},
@@ -109,7 +110,7 @@ func TestApplyReconcilesIdentityState(t *testing.T) {
 		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
 	}
 
-	if err := metadata.UpsertPrincipal(ctx, core.Principal{Name: "old", AccessKeys: []core.AccessKey{{ID: "old-key", Secret: "old-secret"}}}); err != nil {
+	if err := metadata.UpsertPrincipal(ctx, core.Principal{Name: "old"}); err != nil {
 		t.Fatalf("UpsertPrincipal() error = %v", err)
 	}
 	if err := metadata.UpsertRole(ctx, core.Role{Name: "old-role"}); err != nil {
@@ -119,11 +120,12 @@ func TestApplyReconcilesIdentityState(t *testing.T) {
 	doc := Document{
 		Principals: []core.Principal{{
 			Name: "admin",
-			AccessKeys: []core.AccessKey{{
-				ID:     "admin",
-				Secret: "admin-secret",
-			}},
 		}},
+		S3: S3SeedConfig{AccessKeys: []S3AccessKeySeed{{
+			ID:        "admin",
+			Secret:    "admin-secret",
+			Principal: "admin",
+		}}},
 		Roles: []core.Role{{Name: "reader"}},
 	}
 

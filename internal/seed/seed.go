@@ -16,12 +16,28 @@ type Document struct {
 	Principals []core.Principal `yaml:"principals"`
 	Roles      []core.Role      `yaml:"roles"`
 	Objects    []ObjectSeed     `yaml:"objects"`
+	S3         S3SeedConfig     `yaml:"s3"`
+	GCS        GCSSeedConfig    `yaml:"gcs"`
 }
 
 type ObjectSeed struct {
 	Bucket  string `yaml:"bucket"`
 	Key     string `yaml:"key"`
 	Content string `yaml:"content"`
+}
+
+type S3SeedConfig struct {
+	AccessKeys []S3AccessKeySeed `yaml:"access_keys"`
+}
+
+type S3AccessKeySeed struct {
+	ID        string `yaml:"id"`
+	Secret    string `yaml:"secret"`
+	Principal string `yaml:"principal"`
+}
+
+type GCSSeedConfig struct {
+	Accounts []core.ServiceAccount `yaml:"accounts"`
 }
 
 func Load(path string) (Document, error) {
@@ -59,11 +75,6 @@ func (d Document) Validate() error {
 			continue
 		}
 		principalSet[principal.Name] = struct{}{}
-		for j, key := range principal.AccessKeys {
-			if strings.TrimSpace(key.ID) == "" || strings.TrimSpace(key.Secret) == "" {
-				problems = append(problems, fmt.Sprintf("principals[%d].access_keys[%d] requires id and secret", i, j))
-			}
-		}
 	}
 	for i, role := range d.Roles {
 		if strings.TrimSpace(role.Name) == "" {
@@ -75,8 +86,10 @@ func (d Document) Validate() error {
 				problems = append(problems, fmt.Sprintf("roles[%d].trust.statements[%d] requires principals", i, j))
 			}
 			for _, principal := range statement.Principals {
-				if _, ok := principalSet[principal]; !ok {
-					problems = append(problems, fmt.Sprintf("roles[%d].trust references unknown principal %q", i, principal))
+				if principal != "*" {
+					if _, ok := principalSet[principal]; !ok {
+						problems = append(problems, fmt.Sprintf("roles[%d].trust references unknown principal %q", i, principal))
+					}
 				}
 			}
 		}
@@ -87,6 +100,44 @@ func (d Document) Validate() error {
 		}
 		if strings.TrimSpace(object.Key) == "" {
 			problems = append(problems, fmt.Sprintf("objects[%d].key is required", i))
+		}
+	}
+	keySet := map[string]struct{}{}
+	for i, key := range d.S3.AccessKeys {
+		if strings.TrimSpace(key.ID) == "" {
+			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].id is required", i))
+		}
+		if strings.TrimSpace(key.Secret) == "" {
+			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].secret is required", i))
+		}
+		if strings.TrimSpace(key.Principal) == "" {
+			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].principal is required", i))
+		} else if _, ok := principalSet[key.Principal]; !ok {
+			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].principal references unknown principal %q", i, key.Principal))
+		}
+		if strings.TrimSpace(key.ID) != "" {
+			if _, ok := keySet[key.ID]; ok {
+				problems = append(problems, fmt.Sprintf("s3.access_keys[%d].id %q is not unique", i, key.ID))
+			}
+			keySet[key.ID] = struct{}{}
+		}
+	}
+	tokenSet := map[string]struct{}{}
+	for i, sa := range d.GCS.Accounts {
+		if strings.TrimSpace(sa.ClientEmail) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].client_email is required", i))
+		}
+		if strings.TrimSpace(sa.Principal) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].principal is required", i))
+		} else if _, ok := principalSet[sa.Principal]; !ok {
+			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].principal references unknown principal %q", i, sa.Principal))
+		}
+		if strings.TrimSpace(sa.Token) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].token is required", i))
+		} else if _, ok := tokenSet[sa.Token]; ok {
+			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].token %q is not unique", i, sa.Token))
+		} else {
+			tokenSet[sa.Token] = struct{}{}
 		}
 	}
 	if len(problems) > 0 {

@@ -193,7 +193,20 @@ func (m *failingMetadataStore) ListMultipartParts(context.Context, string) ([]co
 	return nil, nil
 }
 func (m *failingMetadataStore) DeleteMultipartUpload(context.Context, string) error { return nil }
-func (m *failingMetadataStore) Close() error                                        { return nil }
+func (m *failingMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
+	return nil
+}
+func (m *failingMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, []core.PolicyDocument, error) {
+	return core.ServiceAccount{}, nil, core.ErrNotFound
+}
+func (m *failingMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
+	return core.ServiceAccount{}, core.ErrNotFound
+}
+func (m *failingMetadataStore) ListServiceAccounts(context.Context) ([]core.ServiceAccount, error) {
+	return nil, nil
+}
+func (m *failingMetadataStore) DeleteServiceAccounts(context.Context) error { return nil }
+func (m *failingMetadataStore) Close() error                                { return nil }
 
 type multipartMetadataStore struct {
 	bucket               string
@@ -251,4 +264,17 @@ func (m *multipartMetadataStore) ListMultipartParts(context.Context, string) ([]
 func (m *multipartMetadataStore) DeleteMultipartUpload(context.Context, string) error {
 	return m.deleteMultipartErr
 }
-func (m *multipartMetadataStore) Close() error { return nil }
+func (m *multipartMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
+	return nil
+}
+func (m *multipartMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, []core.PolicyDocument, error) {
+	return core.ServiceAccount{}, nil, core.ErrNotFound
+}
+func (m *multipartMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
+	return core.ServiceAccount{}, core.ErrNotFound
+}
+func (m *multipartMetadataStore) ListServiceAccounts(context.Context) ([]core.ServiceAccount, error) {
+	return nil, nil
+}
+func (m *multipartMetadataStore) DeleteServiceAccounts(context.Context) error { return nil }
+func (m *multipartMetadataStore) Close() error                                { return nil }

@@ -248,9 +248,11 @@ principals:
           - effect: Allow
             actions: ["*"]
             resources: ["*"]
-    access_keys:
-      - id: admin
-        secret: admin-secret
+s3:
+  access_keys:
+    - id: admin
+      secret: admin-secret
+      principal: admin
 roles:
   - name: data-reader
     trust:

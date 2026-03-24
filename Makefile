@@ -38,7 +38,7 @@ tidy:
 	@$(GO) mod tidy
 
 compat:
-	@uv run python scripts/compat/run_all.py
+	@uv run scripts/compat/run_all.py
 
 clean:
 	@rm -rf $(BIN_DIR)
