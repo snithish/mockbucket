@@ -5,6 +5,11 @@ BINARY := mockbucketd
 BIN_DIR := ./bin
 CONFIG ?= mockbucket.yaml
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help build run test fmt fmt-check lint tidy compat docker clean
@@ -24,9 +29,9 @@ help:
 
 build: $(BIN_DIR)/$(BINARY)
 
-$(BIN_DIR)/$(BINARY): $(shell find cmd -maxdepth 2 -name '*.go') go.mod go.sum
+$(BIN_DIR)/$(BINARY): $(shell find cmd -maxdepth 2 -name '*.go') go.mod go.sum Makefile
 	@mkdir -p $(BIN_DIR)
-	@$(GO) build -o $(BIN_DIR)/$(BINARY) ./cmd/mockbucketd
+	@$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) ./cmd/mockbucketd
 
 run: build
 	@$(BIN_DIR)/$(BINARY) --config $(CONFIG)
