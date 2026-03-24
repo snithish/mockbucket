@@ -9,6 +9,7 @@ permissions:
   id-token: write
   packages: write
   attestations: write
+  security-events: write
 
 jobs:
   release:
@@ -42,6 +43,28 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan release Docker image with Trivy
+        uses: aquasecurity/trivy-action@57a97c7 # v0.35.0
+        with:
+          image-ref: 'ghcr.io/${{ github.repository }}:${{ github.ref_name }}'
+          format: sarif
+          output: trivy-results.sarif
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4.32.6
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Fail on CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7 # v0.35.0
+        with:
+          image-ref: 'ghcr.io/${{ github.repository }}:${{ github.ref_name }}'
+          format: table
+          exit-code: '1'
+          severity: 'CRITICAL'
 
       - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         if: hashFiles('dist/checksums.txt') != ''
