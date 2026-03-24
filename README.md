@@ -1,103 +1,518 @@
 # MockBucket
 
-A Go-based local emulator for cloud object storage and IAM that lets you run S3/STS-compatible workloads on your laptop or inside CI without talking to AWS. MockBucket wires a lightweight daemon, durable filesystem+SQLite persistence, policy-driven identity, and future-ready adapter scaffolds so you can build and test compatibility before hitting a live cloud account.
+[![ci](https://github.com/snithish/mockbucket/actions/workflows/ci.yaml/badge.svg)](https://github.com/snithish/mockbucket/actions/workflows/ci.yaml)
+[![release](https://img.shields.io/github/v/release/snithish/mockbucket)](https://github.com/snithish/mockbucket/releases)
+[![docker](https://img.shields.io/badge/docker-ghcr.io%2Fsnithish%2Fmockbucket-blue)](https://github.com/snithish/mockbucket/pkgs/container/mockbucket)
+[![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
+[![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
+
+A standalone, local object-storage emulator for **S3**, **STS**, and **GCS** (planned). Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
+
+MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and evaluates IAM policies in-process so your tests are fast, deterministic, and free.
 
 ## Table of Contents
-- [Features](#features)
+
 - [Quick Start](#quick-start)
+  - [Docker](#docker)
+  - [Pre-built Binary](#pre-built-binary)
+  - [Build from Source](#build-from-source)
+- [Docker Reference](#docker-reference)
+  - [Basic Usage](#basic-usage)
+  - [Docker Compose](#docker-compose)
+  - [Persistent Storage](#persistent-storage)
 - [Configuration](#configuration)
+  - [Server](#server)
+  - [Storage](#storage)
+  - [Seed](#seed)
+  - [Frontends](#frontends)
+  - [Auth](#auth)
 - [Seeding State](#seeding-state)
-- [Architecture & Packages](#architecture--packages)
-- [Testing & Compatibility](#testing--compatibility)
-- [Roadmap](#roadmap)
+  - [Buckets](#buckets)
+  - [Principals](#principals)
+  - [Access Keys](#access-keys)
+  - [Roles](#roles)
+  - [Objects](#objects)
+- [Usage Examples](#usage-examples)
+  - [AWS CLI](#aws-cli)
+  - [Python (boto3)](#python-boto3)
+  - [STS AssumeRole](#sts-assumerole)
+- [Verifying Releases](#verifying-releases)
+- [Architecture](#architecture)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
 
-## Features
-- **AWS S3 & STS surface** – exposes `ListBuckets`, `CreateBucket`, bucket metadata, object CRUD, and `AssumeRole` with SigV4 verification and temporary credentials.
-- **Durable storage stack** – object data is streamed into a filesystem root while SQLite stores bucket/object metadata, listings, multipart uploads, and session records.
-- **Seed-driven identity** – define buckets, principals, roles, trust/policy statements, access keys, and bootstrap objects through YAML so every run is deterministic.
-- **Sensible observability** – health/readiness probes, structured logging, tracing hooks, request IDs, and policy-aware middleware sit in front of every frontend.
-- **Provider-ready scaffolds** – pluggable frontends for GCS and Azure remain disabled until their enablement phases, making it easy to add new protocols without reshaping the core.
-
 ## Quick Start
-1. **Install Go 1.26.1 or newer.**
-2. **Build the daemon**
-   ```sh
-   go build -o mockbucketd ./cmd/mockbucketd
-   ```
-3. **Run with the default config**
-   ```sh
-   ./mockbucketd --config mockbucket.yaml
-   ```
-   This spins up `mockbucketd` on `127.0.0.1:9000`, persists objects under `./var/objects`, and loads identities from `seed.example.yaml`.
-4. **Talk to it**
-   Use any AWS SDK, the AWS CLI, or compatible tooling against `http://127.0.0.1:9000` with the `admin/admin-secret` keys from `seed.example.yaml`.
+
+### Docker
+
+The fastest way to get started. The image is published to GitHub Container Registry.
+
+```sh
+docker run -d \
+  --name mockbucket \
+  -p 9000:9000 \
+  -v mockbucket-data:/var/data \
+  ghcr.io/snithish/mockbucket:latest
+```
+
+MockBucket starts on `http://localhost:9000` with a default `demo` bucket and `admin` / `admin-secret` credentials.
+
+Test it:
+
+```sh
+aws --endpoint-url http://localhost:9000 \
+    s3 ls --no-sign-request
+```
+
+### Pre-built Binary
+
+Download the latest release for your platform from the [Releases page](https://github.com/snithish/mockbucket/releases).
+
+```sh
+# Example for Linux amd64
+curl -LO https://github.com/snithish/mockbucket/releases/latest/download/mockbucket_$(curl -s https://api.github.com/repos/snithish/mockbucket/releases/latest | grep tag_name | cut -d '"' -f4 | tr -d v)_linux_amd64.tar.gz
+tar xzf mockbucket_*_linux_amd64.tar.gz
+./mockbucketd --config mockbucket.yaml
+```
+
+Or download manually from the [Releases page](https://github.com/snithish/mockbucket/releases), extract, and run:
+
+```sh
+./mockbucketd --config mockbucket.yaml
+```
+
+### Build from Source
+
+Requires Go 1.26.1 or newer.
+
+```sh
+git clone https://github.com/snithish/mockbucket.git
+cd mockbucket
+make build
+./bin/mockbucketd --config mockbucket.yaml
+```
+
+Or install directly:
+
+```sh
+go install github.com/snithish/mockbucket/cmd/mockbucketd@latest
+mockbucketd --config mockbucket.yaml
+```
+
+## Docker Reference
+
+### Basic Usage
+
+```sh
+# Run with default seed data
+docker run -d --name mockbucket -p 9000:9000 ghcr.io/snithish/mockbucket:latest
+
+# Run with a custom config
+docker run -d --name mockbucket -p 9000:9000 \
+  -v ./mockbucket.yaml:/etc/mockbucket/config.yaml:ro \
+  ghcr.io/snithish/mockbucket:latest --config /etc/mockbucket/config.yaml
+```
+
+### Docker Compose
+
+```yaml
+services:
+  mockbucket:
+    image: ghcr.io/snithish/mockbucket:latest
+    ports:
+      - "9000:9000"
+    volumes:
+      - mockbucket-data:/var/data
+      - ./mockbucket.yaml:/etc/mockbucket/config.yaml:ro
+      - ./seed.yaml:/etc/mockbucket/seed.yaml:ro
+    command: ["--config", "/etc/mockbucket/config.yaml"]
+    healthcheck:
+      test: ["CMD", "/mockbucketd", "--healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  mockbucket-data:
+```
+
+### Persistent Storage
+
+The Docker image exposes `/var/data` as a volume mount point. To persist objects across container restarts:
+
+```sh
+docker run -d --name mockbucket -p 9000:9000 \
+  -v mockbucket-data:/var/data \
+  ghcr.io/snithish/mockbucket:latest
+```
+
+When using a custom config, ensure your `storage.root_dir` and `storage.sqlite_path` point inside `/var/data`:
+
+```yaml
+storage:
+  root_dir: /var/data/objects
+  sqlite_path: /var/data/mockbucket.db
+```
 
 ## Configuration
-MockBucket reads the YAML file supplied via `--config`. The default `mockbucket.yaml` contains these sections:
 
-- `server` – controls the listen address, readiness/health endpoints, request logs, and shutdown timeout.
-- `storage` – points at the filesystem root for object blobs (`root_dir`) and the SQLite database path used for metadata.
-- `seed` – a single `path` pointing to a YAML description of buckets, principals, roles, policies, and initial objects. See `seed.example.yaml` for the schema.
-- `frontends` – toggle each protocol (`s3`, `sts`, `gcs`, `azure`). Only S3/STS are enabled today.
-- `auth` – session duration, token lifetimes, and any other future auth knobs.
+MockBucket reads a YAML file supplied via `--config`. Copy the example to get started:
 
-Copy `mockbucket.example.yaml` to `mockbucket.yaml` to customize ports, storage locations, frontends, or logging without editing your main config in place.
+```sh
+cp mockbucket.example.yaml mockbucket.yaml
+```
+
+### Server
+
+```yaml
+server:
+  address: 127.0.0.1:9000    # listen address
+  request_log: true           # log every request
+  shutdown_timeout: 10s       # graceful shutdown timeout
+```
+
+### Storage
+
+```yaml
+storage:
+  root_dir: ./var/objects         # filesystem root for object blobs
+  sqlite_path: ./var/mockbucket.db # SQLite database for metadata
+```
+
+### Seed
+
+```yaml
+seed:
+  path: ./seed.example.yaml   # path to seed data (buckets, principals, roles, objects)
+```
+
+### Frontends
+
+Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime; STS requires S3.
+
+```yaml
+frontends:
+  s3: true       # enable S3-compatible API
+  sts: true      # enable STS (requires s3: true)
+  gcs: false     # GCS frontend (future)
+  azure: false   # Azure frontend (scaffold, disabled)
+```
+
+Supported profiles:
+
+| S3 | STS | GCS | Use case |
+|----|-----|-----|----------|
+| true | true | false | AWS-compatible testing (default) |
+| true | false | false | S3-only testing |
+| false | false | true | GCS-only testing |
+
+### Auth
+
+```yaml
+auth:
+  session_duration: 1h   # STS session token lifetime
+```
 
 ## Seeding State
-The seed file defines everything you need to start with:
+
+The seed file defines the entire initial state of MockBucket. See `seed.example.yaml` for a complete reference.
+
+### Buckets
+
+Declare named buckets before any object creation:
 
 ```yaml
 buckets:
-  - demo
+  - my-bucket
+  - logs-bucket
+```
+
+### Principals
+
+Assign policies to IAM users:
+
+```yaml
 principals:
   - name: admin
-    policies: ...
+    policies:
+      - statements:
+          - effect: Allow
+            actions: ["*"]
+            resources: ["*"]
+  - name: reader
+    policies:
+      - statements:
+          - effect: Allow
+            actions: ["s3:GetObject", "s3:ListBucket"]
+            resources: ["arn:mockbucket:s3:::my-bucket", "arn:mockbucket:s3:::my-bucket/*"]
+```
+
+### Access Keys
+
+Define S3 access keys under `s3.access_keys`, referencing a principal:
+
+```yaml
+s3:
+  access_keys:
+    - id: admin
+      secret: admin-secret
+      principal: admin
+    - id: reader-key
+      secret: reader-secret
+      principal: reader
+```
+
+### Roles
+
+Define IAM roles with trust policies for `sts:AssumeRole`:
+
+```yaml
 roles:
   - name: data-reader
-    trust: ...
+    trust:
+      statements:
+        - effect: Allow
+          principals: ["admin"]
+          actions: ["sts:AssumeRole"]
+    policies:
+      - statements:
+          - effect: Allow
+            actions: ["s3:GetObject", "s3:ListBucket"]
+            resources: ["arn:mockbucket:s3:::my-bucket", "arn:mockbucket:s3:::my-bucket/*"]
+```
+
+### Objects
+
+Bootstrap objects are created on startup:
+
+```yaml
 objects:
-  - bucket: demo
-    key: bootstrap/hello.txt
+  - bucket: my-bucket
+    key: config/app.json
+    content: '{"version": "1.0"}'
+  - bucket: my-bucket
+    key: hello.txt
     content: hello from mockbucket
 ```
 
-- **Buckets** – declare named buckets before any object creation.
-- **Principals** – assign allow/deny policies and access key/secret pairs.
-- **Roles** – trust statements (e.g., `sts:AssumeRole`) plus role-specific policies.
-- **Objects** – optional bootstrapping content stored inside a bucket.
+## Usage Examples
 
-Reloading the daemon picks up new seeds; invalid references fail fast so you can iterate safely.
+### AWS CLI
 
-## Architecture & Packages
-- `cmd/mockbucketd` – entrypoint that parses flags, loads config, wires logging, and starts the runtime.
-- `internal/server` – builds the HTTP server, middleware, router registration, and graceful shutdown.
-- `internal/config` – schema validation and defaults for the config file.
-- `internal/storage` – filesystem-backed object store and SQLite metadata plus multipart helpers.
-- `internal/auth` & `internal/iam` – policy evaluator, trust/role model, session store, and SigV4 verifier.
-- `internal/seed` – seed parser/validator and bootstrapper that wires identities to storage and auth.
-- `internal/frontends` – adapters for S3, STS, GCS, and Azure; GCS/Azure are wired but disabled until their enablement phase.
-- `internal/httpx` – shared middleware for request IDs, tracing, and error mapping.
+Configure the AWS CLI to point at MockBucket:
 
-## Testing & Compatibility
-- Run Go unit tests: `go test ./...`
-- Compatibility suites are under `scripts/compat`:
-  - `awscli.sh`, `boto3.py`, `spark_s3a.sh`, `duckdb.sh`, and others exercise the S3 surface with real tooling.
-  - `scripts/compat/run_all.sh` chains them together for a full compatibility gate;
-  ensure you have AWS CLI, Python deps, DuckDB, and Spark installed if you run the suite locally.
+```sh
+export AWS_ACCESS_KEY_ID=admin
+export AWS_SECRET_ACCESS_KEY=admin-secret
+export AWS_EC2_METADATA_DISABLED=true
 
-## Roadmap
-See `plan.md` for the full atomic phased implementation plan. Highlights:
-1. Durable storage + authorization core (done).
-2. STS + S3 compatibility gate (current focus).
-3. GCS and Azure frontends (future phases).
+# List buckets
+aws --endpoint-url http://localhost:9000 s3api list-buckets
+
+# Create a bucket
+aws --endpoint-url http://localhost:9000 s3api create-bucket --bucket my-new-bucket
+
+# Upload an object
+echo "hello world" > /tmp/hello.txt
+aws --endpoint-url http://localhost:9000 s3api put-object \
+    --bucket demo --key test/hello.txt --body /tmp/hello.txt
+
+# Download an object
+aws --endpoint-url http://localhost:9000 s3api get-object \
+    --bucket demo --key test/hello.txt /tmp/downloaded.txt
+cat /tmp/downloaded.txt
+
+# List objects
+aws --endpoint-url http://localhost:9000 s3api list-objects-v2 --bucket demo
+
+# Head object (metadata)
+aws --endpoint-url http://localhost:9000 s3api head-object --bucket demo --key test/hello.txt
+```
+
+### Python (boto3)
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:9000",
+    aws_access_key_id="admin",
+    aws_secret_access_key="admin-secret",
+    region_name="us-east-1",
+)
+
+# List buckets
+response = s3.list_buckets()
+for bucket in response["Buckets"]:
+    print(bucket["Name"])
+
+# Upload
+s3.put_object(Bucket="demo", Key="python/hello.txt", Body=b"hello from python")
+
+# Download
+obj = s3.get_object(Bucket="demo", Key="python/hello.txt")
+print(obj["Body"].read().decode())
+
+# List objects
+response = s3.list_objects_v2(Bucket="demo")
+for item in response.get("Contents", []):
+    print(item["Key"])
+```
+
+### STS AssumeRole
+
+```sh
+export AWS_ACCESS_KEY_ID=admin
+export AWS_SECRET_ACCESS_KEY=admin-secret
+
+# Assume a role
+CREDENTIALS=$(aws --endpoint-url http://localhost:9000 sts assume-role \
+    --role-arn arn:mockbucket:iam::role/data-reader \
+    --role-session-name test-session)
+
+# Use temporary credentials
+export AWS_ACCESS_KEY_ID=$(echo $CREDENTIALS | jq -r '.Credentials.AccessKeyId')
+export AWS_SECRET_ACCESS_KEY=$(echo $CREDENTIALS | jq -r '.Credentials.SecretAccessKey')
+export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r '.Credentials.SessionToken')
+
+# Access with assumed role permissions
+aws --endpoint-url http://localhost:9000 s3api get-object \
+    --bucket demo --key bootstrap/hello.txt /tmp/assumed.txt
+```
+
+## Verifying Releases
+
+All release artifacts are signed with [Sigstore](https://sigstore.dev) cosign using keyless OIDC. You can verify the authenticity of any release binary or Docker image.
+
+### Verify Binary Checksums
+
+```sh
+# Download checksums.txt and checksums.txt.sigstore.json from the release
+cosign verify-blob \
+  --certificate-identity "https://github.com/snithish/mockbucket/.github/workflows/release.yaml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --bundle checksums.txt.sigstore.json \
+  ./checksums.txt
+
+# Then verify the binary
+sha256sum -c checksums.txt
+```
+
+### Verify Docker Image
+
+```sh
+cosign verify \
+  --certificate-identity "https://github.com/snithish/mockbucket/.github/workflows/docker.yaml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/snithish/mockbucket:v0.1.0
+```
+
+### Verify SBOM
+
+Each release includes Software Bill of Materials (SBOM) artifacts. Check the release assets for `.spdx.json` files.
+
+## Architecture
+
+```
+cmd/mockbucketd/          -- entrypoint: flags, config, logging, signal handling
+internal/
+  server/                 -- HTTP server, router, middleware, graceful shutdown
+  config/                 -- YAML config schema, validation, defaults
+  storage/                -- filesystem object store, SQLite metadata, multipart
+  auth/                   -- request authentication
+    aws/                  -- SigV4 verification, bearer tokens
+  iam/                    -- policy evaluation, trust model, sessions
+  seed/                   -- seed parser, validator, bootstrapper
+  frontends/              -- protocol adapters
+    s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
+    sts/                  -- STS wire protocol (AssumeRole)
+    gcs/                  -- GCS scaffold (disabled)
+    azure/                -- Azure scaffold (disabled)
+  httpx/                  -- shared middleware, error mapping, request context
+  core/                   -- sentinel errors, domain models
+```
+
+Object bytes are streamed to the filesystem. Bucket/object metadata, listings, multipart state, and session records live in SQLite. IAM policies are evaluated in-process with explicit-deny semantics.
+
+## Testing
+
+### Unit Tests
+
+```sh
+make test
+# or
+go test ./...
+```
+
+### Run a Single Package or Test
+
+```sh
+go test ./internal/iam
+go test ./internal/iam -run TestEvaluatorHonorsExplicitDeny
+go test ./internal/server -run TestS3FrontendContract/BucketLevelAPI
+go test -v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket
+```
+
+### Compatibility Suite
+
+The compatibility suite runs real AWS SDK and CLI tools against a live MockBucket instance. Requires Python with `uv`:
+
+```sh
+# Run all tests
+uv run scripts/compat/run_all.py test
+
+# AWS tests only
+uv run scripts/compat/run_all.py test aws
+
+# GCS tests only
+uv run scripts/compat/run_all.py test gcs
+
+# Start server for manual testing
+uv run scripts/compat/run_all.py serve
+
+# Verbose HTTP logging
+uv run scripts/compat/run_all.py --debug test
+```
+
+### Lint and Format
+
+```sh
+make fmt         # auto-format all Go files
+make fmt-check   # check formatting (CI-friendly)
+make lint        # run go vet
+```
+
+## Release Process
+
+Releases are automated via GitHub Actions:
+
+1. **Tag a release**: `git tag v0.1.0 && git push origin v0.1.0`
+2. **GoReleaser** builds cross-platform binaries for Linux, macOS, and Windows (amd64/arm64)
+3. **Docker images** are built for linux/amd64 and linux/arm64 and pushed to `ghcr.io/snithish/mockbucket`
+4. **Cosign** signs all artifacts (binaries, checksums, container images) using Sigstore keyless OIDC
+5. **SBOMs** are generated for every archive
+6. **SLSA provenance** attestations are attached to the release
+
+### Security
+
+- All GitHub Actions are pinned to commit SHAs to prevent supply chain attacks
+- Release workflow requires manual approval via GitHub environment protection
+- Binaries and container images are signed and verifiable with cosign
+- Container images are scanned with Trivy on every build
+- Docker image runs as nonroot on a distroless base
 
 ## Contributing
-1. Fork the repo and work on a phase branch prefixed with `codex/`.
-2. Add tests for new behavior and confirm `go test ./...` passes.
-3. Use the compatibility scripts when touching protocol behavior.
-4. Open a PR against `main` once your phase meets the committed boundary in `plan.md`.
+
+1. Fork the repo and create a feature branch.
+2. Add tests for new behavior and ensure `go test ./...` passes.
+3. Run `make fmt` before committing.
+4. Use the compatibility scripts when touching protocol behavior.
+5. Open a PR against `main`.
+
+Please see `plan.md` for the phased implementation roadmap and phase boundaries.
 
 ## License
-TBD – add a `LICENSE` file when you decide on a formal open-source license.
+
+[MIT](LICENSE)

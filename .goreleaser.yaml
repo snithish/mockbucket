@@ -1,0 +1,108 @@
+version: 2
+
+project_name: mockbucket
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mockbucketd
+    main: ./cmd/mockbucketd
+    binary: mockbucketd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: default
+    builds:
+      - mockbucketd
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+      - "Merge pull request"
+      - "Merge branch"
+
+dockers_v2:
+  - images:
+      - "ghcr.io/snithish/mockbucket"
+    ids:
+      - mockbucketd
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    image_templates:
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-amd64"
+  - images:
+      - "ghcr.io/snithish/mockbucket"
+    ids:
+      - mockbucketd
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    image_templates:
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/snithish/mockbucket:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-amd64"
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/snithish/mockbucket:latest"
+    image_templates:
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-amd64"
+      - "ghcr.io/snithish/mockbucket:{{ .Tag }}-arm64"
+
+docker_signs:
+  - cmd: cosign
+    args:
+      - "sign"
+      - "${artifact}"
+      - "--yes"

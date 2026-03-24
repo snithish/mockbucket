@@ -1,0 +1,16 @@
+server:
+  address: 0.0.0.0:9000
+  request_log: true
+  shutdown_timeout: 10s
+storage:
+  root_dir: /var/data/objects
+  sqlite_path: /var/data/mockbucket.db
+seed:
+  path: /etc/mockbucket/seed.yaml
+frontends:
+  s3: true
+  sts: true
+  gcs: false
+  azure: false
+auth:
+  session_duration: 1h
