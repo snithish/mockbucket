@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
-from compat import ENDPOINT, fail, ok
+from compat import ENDPOINT, fail, ok, skip
 
 from google.auth import credentials
 
@@ -76,6 +76,7 @@ def run() -> int:
     errors += _test_buckets()
     errors += _test_objects()
     errors += _test_multipart()
+    _test_duckdb()
     return errors
 
 
@@ -170,3 +171,7 @@ def _test_multipart() -> int:
 
     ok("gcs multipart")
     return 0
+
+
+def _test_duckdb() -> None:
+    skip("duckdb — GCS requires native extension (github.com/northpolesec/duckdb-gcs) which does not support custom endpoints")

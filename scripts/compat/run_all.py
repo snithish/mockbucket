@@ -4,6 +4,7 @@
 # dependencies = [
 #     "awscli",
 #     "boto3",
+#     "duckdb",
 #     "google-cloud-storage",
 # ]
 # ///

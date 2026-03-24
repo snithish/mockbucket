@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from compat import ENDPOINT, fail, ok, skip
+from parquet import read_count, s3_con, write_parquet_s3
 
 
 def configure() -> dict:
@@ -32,6 +33,7 @@ def run() -> int:
     errors += _test_awscli()
     errors += _test_boto3()
     errors += _test_multipart()
+    errors += _test_duckdb()
     return errors
 
 
@@ -157,4 +159,25 @@ def _test_multipart() -> int:
         return 1
 
     ok("boto3 multipart")
+    return 0
+
+
+def _test_duckdb() -> int:
+    ROWS = 15_000_000
+    con = s3_con(
+        endpoint="127.0.0.1:19000",
+        key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        secret=os.environ["AWS_SECRET_ACCESS_KEY"],
+        region=os.environ["AWS_REGION"],
+    )
+    try:
+        write_parquet_s3(con, "s3://demo/duckdb", rows_per_file=ROWS, num_files=2)
+    except Exception as e:
+        fail(f"duckdb parquet — write failed: {e}")
+        return 1
+    count = read_count(con, "s3://demo/duckdb/*.parquet")
+    if count != 2 * ROWS:
+        fail(f"duckdb parquet — count={count}, want {2 * ROWS}")
+        return 1
+    ok("duckdb parquet")
     return 0

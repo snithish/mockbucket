@@ -43,6 +43,12 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
 		switch {
+		case key == "" && r.Method == http.MethodGet && hasListObjectsV2Query(r):
+			handleListObjectsV2(w, r, deps, bucket)
+		case key == "" && r.Method == http.MethodGet && hasLocationQuery(r):
+			handleGetBucketLocation(w, r, deps, bucket)
+		case key == "":
+			http.NotFound(w, r)
 		case r.Method == http.MethodPost && hasUploadsQuery(r):
 			handleCreateMultipartUpload(w, r, deps, bucket, key)
 		case r.Method == http.MethodPut && hasUploadIDQuery(r):
@@ -204,10 +210,35 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	defer func() { _ = reader.Close() }()
-	setObjectHeadersWithLength(w, meta)
+	setObjectHeaders(w, meta)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, reader)
+
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" || meta.Size <= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, reader)
+		return
+	}
+
+	start, end, err := parseRange(rangeHeader, meta.Size)
+	if err != nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, reader)
+		return
+	}
+
+	if seeker, ok := reader.(io.ReadSeeker); ok {
+		_, _ = seeker.Seek(start, io.SeekStart)
+	} else {
+		_, _ = io.CopyN(io.Discard, reader, start)
+	}
+
+	w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, meta.Size))
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = io.CopyN(w, reader, end-start+1)
 }
 
 func handleHeadObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
@@ -660,4 +691,67 @@ func newUploadID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// parseRange parses a "bytes=start-end" Range header and returns the
+// resolved [start, end] byte offsets (inclusive). Returns an error if
+// the header is malformed or the range is out of bounds.
+func parseRange(header string, size int64) (int64, int64, error) {
+	if !strings.HasPrefix(header, "bytes=") {
+		return 0, 0, fmt.Errorf("unsupported range unit")
+	}
+	spec := strings.TrimPrefix(header, "bytes=")
+	parts := strings.SplitN(spec, "-", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("malformed range: %s", header)
+	}
+
+	startStr, endStr := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+
+	var start, end int64
+	var err error
+
+	switch {
+	case startStr == "" && endStr == "":
+		return 0, 0, fmt.Errorf("malformed range: %s", header)
+	case startStr == "":
+		// suffix range: bytes=-500 → last 500 bytes
+		suffix, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || suffix <= 0 {
+			return 0, 0, fmt.Errorf("malformed suffix range")
+		}
+		start = size - suffix
+		if start < 0 {
+			start = 0
+		}
+		end = size - 1
+	case endStr == "":
+		// open-ended: bytes=500-
+		start, err = strconv.ParseInt(startStr, 10, 64)
+		if err != nil || start < 0 {
+			return 0, 0, fmt.Errorf("malformed range start")
+		}
+		end = size - 1
+	default:
+		// closed range: bytes=0-499
+		start, err = strconv.ParseInt(startStr, 10, 64)
+		if err != nil || start < 0 {
+			return 0, 0, fmt.Errorf("malformed range start")
+		}
+		end, err = strconv.ParseInt(endStr, 10, 64)
+		if err != nil || end < 0 {
+			return 0, 0, fmt.Errorf("malformed range end")
+		}
+	}
+
+	if start >= size {
+		return 0, 0, fmt.Errorf("range start %d exceeds size %d", start, size)
+	}
+	if end >= size {
+		end = size - 1
+	}
+	if start > end {
+		return 0, 0, fmt.Errorf("range start %d > end %d", start, end)
+	}
+	return start, end, nil
 }
