@@ -36,7 +36,7 @@ func (m mockAuth) ResolveAccessKey(_ context.Context, id string) (core.Subject, 
 }
 
 func newMockAuth() mockAuth {
-	admin := core.Subject{PrincipalName: "admin", Policies: []core.PolicyDocument{{Statements: []core.PolicyStatement{{Effect: core.EffectAllow, Actions: []string{"*"}, Resources: []string{"*"}}}}}}
+	admin := core.Subject{PrincipalName: "admin"}
 	return mockAuth{
 		tokens:    map[string]core.Subject{"test-token": admin},
 		accessKey: map[string]core.Subject{"admin": admin},

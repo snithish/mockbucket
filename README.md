@@ -6,9 +6,9 @@
 [![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
 [![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
 
-A standalone, local object-storage emulator for **S3**, **STS**, and **GCS** (planned). Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
+A standalone, local object-storage emulator for **S3**, **STS**, and **GCS**. Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
 
-MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and evaluates IAM policies in-process so your tests are fast, deterministic, and free.
+MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and serves requests without authentication or authorization — every operation is open by design. This keeps the emulator simple and fast while remaining wire-compatible with real AWS and GCP SDKs.
 
 ## Table of Contents
 
@@ -56,7 +56,7 @@ docker run -d \
   ghcr.io/snithish/mockbucket:latest
 ```
 
-MockBucket starts on `http://localhost:9000` with a default `demo` bucket and `admin` / `admin-secret` credentials.
+MockBucket starts on `http://localhost:9000` with a default `demo` bucket.
 
 Test it:
 
@@ -189,11 +189,6 @@ seed:
     - my-bucket
   principals:
     - name: admin
-      policies:
-        - statements:
-            - effect: Allow
-              actions: ["*"]
-              resources: ["*"]
   s3:
     access_keys:
       - id: admin
@@ -203,23 +198,21 @@ seed:
 
 ### Frontends
 
-Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime; STS requires S3.
+Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime. STS is automatically available when S3 is enabled.
 
 ```yaml
 frontends:
-  s3: true       # enable S3-compatible API
-  sts: true      # enable STS (requires s3: true)
-  gcs: false     # GCS frontend (future)
+  s3: true       # enable S3-compatible API (+ STS)
+  gcs: false     # GCS frontend
   azure: false   # Azure frontend (scaffold, disabled)
 ```
 
 Supported profiles:
 
-| S3 | STS | GCS | Use case |
-|----|-----|-----|----------|
-| true | true | false | AWS-compatible testing (default) |
-| true | false | false | S3-only testing |
-| false | false | true | GCS-only testing |
+| S3 | GCS | Use case |
+|----|-----|----------|
+| true | false | AWS-compatible testing with STS (default) |
+| false | true | GCS-only testing |
 
 ### Auth
 
@@ -227,6 +220,18 @@ Supported profiles:
 auth:
   session_duration: 1h   # STS session token lifetime
 ```
+
+## Design Caveats
+
+MockBucket is intentionally **authless**. This is the right trade-off for a local dev and CI emulator, but it differs from real cloud behavior in important ways:
+
+- **No SigV4 verification.** S3 and STS requests are accepted regardless of the access key ID, secret key, or signature. Any AWS SDK client works because the server does not check credentials.
+- **No IAM policy evaluation.** Seed data supports `principals`, `roles`, and `policies`, but no access control is enforced. Every operation is allowed.
+- **No trust policy checks on AssumeRole.** STS `AssumeRole` succeeds for any role that exists in the seed, regardless of who calls it.
+- **STS auto-enables with S3.** There is no `frontends.sts` config flag. When `s3: true`, STS is always available.
+- **Seed data is structural, not authoritative.** Principals and roles in seed YAML define entities for GCS service accounts and seed consistency. Policies, trust statements, and access control have been removed entirely.
+
+If you need real auth or IAM enforcement for testing, use a different tool or a real AWS sandbox. MockBucket's value is fast, deterministic, wire-compatible S3/STS/GCS — not security simulation.
 
 ## Seeding State
 
@@ -244,27 +249,17 @@ buckets:
 
 ### Principals
 
-Assign policies to IAM users:
+Principals are used by GCS for service account generation. They are optional for S3/STS mode:
 
 ```yaml
 principals:
   - name: admin
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["*"]
-            resources: ["*"]
   - name: reader
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["s3:GetObject", "s3:ListBucket"]
-            resources: ["arn:mockbucket:s3:::my-bucket", "arn:mockbucket:s3:::my-bucket/*"]
 ```
 
 ### Access Keys
 
-Define S3 access keys under `s3.access_keys`, referencing a principal:
+Define S3 access keys under `s3.access_keys`, referencing a principal. These are used by the AWS SDK to construct requests (the server does not verify them):
 
 ```yaml
 s3:
@@ -279,21 +274,11 @@ s3:
 
 ### Roles
 
-Define IAM roles with trust policies for `sts:AssumeRole`:
+Define named roles for `sts:AssumeRole`. The role must exist, but anyone can assume it — no trust or policy evaluation:
 
 ```yaml
 roles:
   - name: data-reader
-    trust:
-      statements:
-        - effect: Allow
-          principals: ["admin"]
-          actions: ["sts:AssumeRole"]
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["s3:GetObject", "s3:ListBucket"]
-            resources: ["arn:mockbucket:s3:::my-bucket", "arn:mockbucket:s3:::my-bucket/*"]
 ```
 
 ### Objects
@@ -314,7 +299,7 @@ objects:
 
 ### AWS CLI
 
-Configure the AWS CLI to point at MockBucket:
+Configure the AWS CLI to point at MockBucket. Any access key works because the server does not verify credentials:
 
 ```sh
 export AWS_ACCESS_KEY_ID=admin
@@ -377,21 +362,23 @@ for item in response.get("Contents", []):
 
 ### STS AssumeRole
 
+STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data:
+
 ```sh
 export AWS_ACCESS_KEY_ID=admin
 export AWS_SECRET_ACCESS_KEY=admin-secret
 
-# Assume a role
+# Assume a role (no permission check — any caller can assume any role)
 CREDENTIALS=$(aws --endpoint-url http://localhost:9000 sts assume-role \
     --role-arn arn:mockbucket:iam::role/data-reader \
     --role-session-name test-session)
 
-# Use temporary credentials
+# Use temporary credentials with S3
 export AWS_ACCESS_KEY_ID=$(echo $CREDENTIALS | jq -r '.Credentials.AccessKeyId')
 export AWS_SECRET_ACCESS_KEY=$(echo $CREDENTIALS | jq -r '.Credentials.SecretAccessKey')
 export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r '.Credentials.SessionToken')
 
-# Access with assumed role permissions
+# Access with assumed role credentials
 aws --endpoint-url http://localhost:9000 s3api get-object \
     --bucket demo --key bootstrap/hello.txt /tmp/assumed.txt
 ```
@@ -435,20 +422,20 @@ internal/
   server/                 -- HTTP server, router, middleware, graceful shutdown
   config/                 -- YAML config schema, validation, defaults
   storage/                -- filesystem object store, SQLite metadata, multipart
-  auth/                   -- request authentication
-    aws/                  -- SigV4 verification, bearer tokens
-  iam/                    -- policy evaluation, trust model, sessions
+  auth/
+    gcp/                  -- GCS bearer token auth
+  iam/                    -- session management (GCS tokens, STS sessions)
   seed/                   -- seed validation, bootstrapping
   frontends/              -- protocol adapters
     s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
     sts/                  -- STS wire protocol (AssumeRole)
-    gcs/                  -- GCS scaffold (disabled)
+    gcs/                  -- GCS wire protocol
     azure/                -- Azure scaffold (disabled)
   httpx/                  -- shared middleware, error mapping, request context
   core/                   -- sentinel errors, domain models
 ```
 
-Object bytes are streamed to the filesystem. Bucket/object metadata, listings, multipart state, and session records live in SQLite. IAM policies are evaluated in-process with explicit-deny semantics.
+Object bytes are streamed to the filesystem. Bucket/object metadata, listings, multipart state, and session records live in SQLite. S3 and STS have no authentication or authorization. GCS uses bearer token auth for service account compatibility.
 
 ## Testing
 
@@ -464,7 +451,7 @@ go test ./...
 
 ```sh
 go test ./internal/iam
-go test ./internal/iam -run TestEvaluatorHonorsExplicitDeny
+go test ./internal/iam -run TestSessionManagerAssumeRole
 go test ./internal/server -run TestS3FrontendContract/BucketLevelAPI
 go test -v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket
 ```

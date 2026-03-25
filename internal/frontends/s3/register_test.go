@@ -13,8 +13,6 @@ import (
 
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
-	"github.com/snithish/mockbucket/internal/httpx"
-	"github.com/snithish/mockbucket/internal/iam"
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
@@ -26,10 +24,9 @@ func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
 		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
 	}
 	meta := &failingMetadataStore{bucket: "demo", putErr: errors.New("db down")}
-	deps := common.Dependencies{Metadata: meta, Objects: objects, Policy: iam.Evaluator{}}
+	deps := common.Dependencies{Metadata: meta, Objects: objects}
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", bytes.NewBufferString("payload"))
-	req = req.WithContext(httpx.ContextWithSubject(req.Context(), allowSubject("s3:PutObject", "arn:mockbucket:s3:::demo/file.txt")))
 	req.SetPathValue("bucket", "demo")
 	req.SetPathValue("key", "file.txt")
 	rec := httptest.NewRecorder()
@@ -54,10 +51,9 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 		t.Fatalf("PutObject() error = %v", err)
 	}
 	meta := &failingMetadataStore{bucket: "demo", deleteErr: core.ErrNotFound}
-	deps := common.Dependencies{Metadata: meta, Objects: objects, Policy: iam.Evaluator{}}
+	deps := common.Dependencies{Metadata: meta, Objects: objects}
 
 	req := httptest.NewRequest(http.MethodDelete, "/demo/file.txt", nil)
-	req = req.WithContext(httpx.ContextWithSubject(req.Context(), allowSubject("s3:DeleteObject", "arn:mockbucket:s3:::demo/file.txt")))
 	req.SetPathValue("bucket", "demo")
 	req.SetPathValue("key", "file.txt")
 	rec := httptest.NewRecorder()
@@ -94,7 +90,7 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 		deleteMultipartErr:   errors.New("delete failed"),
 		allowMetadataDeletes: true,
 	}
-	deps := common.Dependencies{Metadata: meta, Objects: objects, Policy: iam.Evaluator{}}
+	deps := common.Dependencies{Metadata: meta, Objects: objects}
 
 	payload := struct {
 		XMLName xml.Name `xml:"CompleteMultipartUpload"`
@@ -114,7 +110,6 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	raw, _ := xml.Marshal(payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/demo/object.txt?uploadId=upload-1", bytes.NewReader(raw))
-	req = req.WithContext(httpx.ContextWithSubject(req.Context(), allowSubject("s3:PutObject", "arn:mockbucket:s3:::demo/object.txt")))
 	req.SetPathValue("bucket", "demo")
 	req.SetPathValue("key", "object.txt")
 	rec := httptest.NewRecorder()
@@ -126,19 +121,6 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	}
 	if _, _, err := objects.OpenObject(ctx, "demo", "object.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object rollback, got %v", err)
-	}
-}
-
-func allowSubject(action, resource string) core.Subject {
-	return core.Subject{
-		PrincipalName: "admin",
-		Policies: []core.PolicyDocument{{
-			Statements: []core.PolicyStatement{{
-				Effect:    core.EffectAllow,
-				Actions:   []string{action},
-				Resources: []string{resource},
-			}},
-		}},
 	}
 }
 
@@ -169,15 +151,15 @@ func (m *failingMetadataStore) ListObjects(context.Context, string, string, int,
 }
 func (m *failingMetadataStore) UpsertPrincipal(context.Context, core.Principal) error { return nil }
 func (m *failingMetadataStore) UpsertRole(context.Context, core.Role) error           { return nil }
-func (m *failingMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, []core.PolicyDocument, error) {
-	return core.AccessKey{}, nil, core.ErrNotFound
+func (m *failingMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
+	return core.AccessKey{}, core.ErrNotFound
 }
 func (m *failingMetadataStore) GetRole(context.Context, string) (core.Role, error) {
 	return core.Role{}, core.ErrNotFound
 }
 func (m *failingMetadataStore) CreateSession(context.Context, core.Session) error { return nil }
-func (m *failingMetadataStore) GetSession(context.Context, string) (core.Session, []core.PolicyDocument, error) {
-	return core.Session{}, nil, core.ErrNotFound
+func (m *failingMetadataStore) GetSession(context.Context, string) (core.Session, error) {
+	return core.Session{}, core.ErrNotFound
 }
 func (m *failingMetadataStore) DeleteExpiredSessions(context.Context, time.Time) error { return nil }
 func (m *failingMetadataStore) CreateMultipartUpload(context.Context, core.MultipartUpload) error {
@@ -196,8 +178,8 @@ func (m *failingMetadataStore) DeleteMultipartUpload(context.Context, string) er
 func (m *failingMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
 	return nil
 }
-func (m *failingMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, []core.PolicyDocument, error) {
-	return core.ServiceAccount{}, nil, core.ErrNotFound
+func (m *failingMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, error) {
+	return core.ServiceAccount{}, core.ErrNotFound
 }
 func (m *failingMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
 	return core.ServiceAccount{}, core.ErrNotFound
@@ -238,15 +220,15 @@ func (m *multipartMetadataStore) ListObjects(context.Context, string, string, in
 }
 func (m *multipartMetadataStore) UpsertPrincipal(context.Context, core.Principal) error { return nil }
 func (m *multipartMetadataStore) UpsertRole(context.Context, core.Role) error           { return nil }
-func (m *multipartMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, []core.PolicyDocument, error) {
-	return core.AccessKey{}, nil, core.ErrNotFound
+func (m *multipartMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
+	return core.AccessKey{}, core.ErrNotFound
 }
 func (m *multipartMetadataStore) GetRole(context.Context, string) (core.Role, error) {
 	return core.Role{}, core.ErrNotFound
 }
 func (m *multipartMetadataStore) CreateSession(context.Context, core.Session) error { return nil }
-func (m *multipartMetadataStore) GetSession(context.Context, string) (core.Session, []core.PolicyDocument, error) {
-	return core.Session{}, nil, core.ErrNotFound
+func (m *multipartMetadataStore) GetSession(context.Context, string) (core.Session, error) {
+	return core.Session{}, core.ErrNotFound
 }
 func (m *multipartMetadataStore) DeleteExpiredSessions(context.Context, time.Time) error { return nil }
 func (m *multipartMetadataStore) CreateMultipartUpload(context.Context, core.MultipartUpload) error {
@@ -267,8 +249,8 @@ func (m *multipartMetadataStore) DeleteMultipartUpload(context.Context, string) 
 func (m *multipartMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
 	return nil
 }
-func (m *multipartMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, []core.PolicyDocument, error) {
-	return core.ServiceAccount{}, nil, core.ErrNotFound
+func (m *multipartMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, error) {
+	return core.ServiceAccount{}, core.ErrNotFound
 }
 func (m *multipartMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
 	return core.ServiceAccount{}, core.ErrNotFound

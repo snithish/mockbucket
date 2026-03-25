@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	authaws "github.com/snithish/mockbucket/internal/auth/aws"
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
@@ -24,7 +23,7 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 	if !cfg.Frontends.S3 {
 		return
 	}
-	bucketHandler := authaws.Authenticate("s3", deps.AWSVerifier, deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	bucketHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		switch {
 		case r.Method == http.MethodPut:
@@ -38,8 +37,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	objectHandler := authaws.Authenticate("s3", deps.AWSVerifier, deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	})
+	objectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		key := r.PathValue("key")
 		switch {
@@ -68,22 +67,18 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	})
 	mux.Handle("/{bucket}", bucketHandler)
 	mux.Handle("/{bucket}/{key...}", objectHandler)
 }
 
 func RootHandler(_ config.Config, deps common.Dependencies) http.Handler {
-	return authaws.Authenticate("s3", deps.AWSVerifier, deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleListBuckets(w, r, deps)
-	}))
+	})
 }
 
 func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	if !allow(r, deps, "s3:ListAllMyBuckets", "*") {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	buckets, err := deps.Metadata.ListBuckets(r.Context())
 	if err != nil {
 		writeError(w, err)
@@ -113,11 +108,6 @@ func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Depen
 }
 
 func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:CreateBucket", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if err := deps.Metadata.CreateBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -127,11 +117,6 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleHeadBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:ListBucket", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -140,11 +125,6 @@ func handleHeadBucket(w http.ResponseWriter, r *http.Request, deps common.Depend
 }
 
 func handleGetBucketLocation(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:GetBucketLocation", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -160,11 +140,6 @@ func handleGetBucketLocation(w http.ResponseWriter, r *http.Request, deps common
 func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
-		return
-	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
-		writeError(w, core.ErrAccessDenied)
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
@@ -188,11 +163,6 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
-		return
-	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:GetObject", resource) {
-		writeError(w, core.ErrAccessDenied)
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
@@ -246,11 +216,6 @@ func handleHeadObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 		http.NotFound(w, r)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:GetObject", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -275,11 +240,6 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		http.NotFound(w, r)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:DeleteObject", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -298,11 +258,6 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
-		return
-	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
-		writeError(w, core.ErrAccessDenied)
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
@@ -337,11 +292,6 @@ func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps co
 func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
-		return
-	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
-		writeError(w, core.ErrAccessDenied)
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
@@ -379,11 +329,6 @@ func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Depend
 func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
-		return
-	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:PutObject", resource) {
-		writeError(w, core.ErrAccessDenied)
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
@@ -484,11 +429,6 @@ func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps com
 		http.NotFound(w, r)
 		return
 	}
-	resource := objectResource(bucket, key)
-	if !allow(r, deps, "s3:AbortMultipartUpload", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	uploadID := r.URL.Query().Get("uploadId")
 	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
 	if err != nil {
@@ -508,11 +448,6 @@ func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps com
 }
 
 func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := bucketResource(bucket)
-	if !allow(r, deps, "s3:ListBucket", resource) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
@@ -592,14 +527,6 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 	writeXML(w, http.StatusOK, response)
 }
 
-func allow(r *http.Request, deps common.Dependencies, action, resource string) bool {
-	subject, ok := httpx.SubjectFromContext(r.Context())
-	if !ok {
-		return false
-	}
-	return deps.Policy.Allowed(action, resource, subject.Policies)
-}
-
 func hasLocationQuery(r *http.Request) bool {
 	_, ok := r.URL.Query()["location"]
 	return ok
@@ -616,14 +543,6 @@ func hasUploadsQuery(r *http.Request) bool {
 
 func hasUploadIDQuery(r *http.Request) bool {
 	return r.URL.Query().Get("uploadId") != ""
-}
-
-func bucketResource(bucket string) string {
-	return fmt.Sprintf("arn:mockbucket:s3:::%s", bucket)
-}
-
-func objectResource(bucket, key string) string {
-	return fmt.Sprintf("arn:mockbucket:s3:::%s/%s", bucket, key)
 }
 
 func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {
@@ -693,9 +612,6 @@ func newUploadID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// parseRange parses a "bytes=start-end" Range header and returns the
-// resolved [start, end] byte offsets (inclusive). Returns an error if
-// the header is malformed or the range is out of bounds.
 func parseRange(header string, size int64) (int64, int64, error) {
 	if !strings.HasPrefix(header, "bytes=") {
 		return 0, 0, fmt.Errorf("unsupported range unit")
@@ -715,7 +631,6 @@ func parseRange(header string, size int64) (int64, int64, error) {
 	case startStr == "" && endStr == "":
 		return 0, 0, fmt.Errorf("malformed range: %s", header)
 	case startStr == "":
-		// suffix range: bytes=-500 → last 500 bytes
 		suffix, err := strconv.ParseInt(endStr, 10, 64)
 		if err != nil || suffix <= 0 {
 			return 0, 0, fmt.Errorf("malformed suffix range")
@@ -726,14 +641,12 @@ func parseRange(header string, size int64) (int64, int64, error) {
 		}
 		end = size - 1
 	case endStr == "":
-		// open-ended: bytes=500-
 		start, err = strconv.ParseInt(startStr, 10, 64)
 		if err != nil || start < 0 {
 			return 0, 0, fmt.Errorf("malformed range start")
 		}
 		end = size - 1
 	default:
-		// closed range: bytes=0-499
 		start, err = strconv.ParseInt(startStr, 10, 64)
 		if err != nil || start < 0 {
 			return 0, 0, fmt.Errorf("malformed range start")

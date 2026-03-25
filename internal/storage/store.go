@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,10 +34,10 @@ type MetadataStore interface {
 	ListObjects(ctx context.Context, bucket, prefix string, limit int, after string) ([]core.ObjectMetadata, error)
 	UpsertPrincipal(ctx context.Context, principal core.Principal) error
 	UpsertRole(ctx context.Context, role core.Role) error
-	FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, []core.PolicyDocument, error)
+	FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, error)
 	GetRole(ctx context.Context, name string) (core.Role, error)
 	CreateSession(ctx context.Context, session core.Session) error
-	GetSession(ctx context.Context, token string) (core.Session, []core.PolicyDocument, error)
+	GetSession(ctx context.Context, token string) (core.Session, error)
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 	CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error
 	GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error)
@@ -46,7 +45,7 @@ type MetadataStore interface {
 	ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error)
 	DeleteMultipartUpload(ctx context.Context, uploadID string) error
 	UpsertServiceAccount(ctx context.Context, sa core.ServiceAccount) error
-	FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, []core.PolicyDocument, error)
+	FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, error)
 	FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error)
 	ListServiceAccounts(ctx context.Context) ([]core.ServiceAccount, error)
 	DeleteServiceAccounts(ctx context.Context) error
@@ -428,25 +427,19 @@ func (s *SQLiteStore) UpsertServiceAccount(ctx context.Context, sa core.ServiceA
 	return upsertServiceAccount(ctx, s.db, sa)
 }
 
-func (s *SQLiteStore) FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, []core.PolicyDocument, error) {
+func (s *SQLiteStore) FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, error) {
 	var sa core.ServiceAccount
-	var policiesJSON string
 	row := s.db.QueryRowContext(ctx, `
-		SELECT sa.token, sa.client_email, sa.principal_name, p.policies_json
+		SELECT sa.token, sa.client_email, sa.principal_name
 		FROM service_accounts sa
-		JOIN principals p ON p.name = sa.principal_name
 		WHERE sa.token = ?`, token)
-	if err := row.Scan(&sa.Token, &sa.ClientEmail, &sa.Principal, &policiesJSON); err != nil {
+	if err := row.Scan(&sa.Token, &sa.ClientEmail, &sa.Principal); err != nil {
 		if err == sql.ErrNoRows {
-			return core.ServiceAccount{}, nil, core.ErrNotFound
+			return core.ServiceAccount{}, core.ErrNotFound
 		}
-		return core.ServiceAccount{}, nil, err
+		return core.ServiceAccount{}, err
 	}
-	var policies []core.PolicyDocument
-	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
-		return core.ServiceAccount{}, nil, err
-	}
-	return sa, policies, nil
+	return sa, nil
 }
 
 func (s *SQLiteStore) FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error) {
@@ -473,41 +466,28 @@ func (s *SQLiteStore) DeleteServiceAccounts(ctx context.Context) error {
 	return err
 }
 
-func (s *SQLiteStore) FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, []core.PolicyDocument, error) {
+func (s *SQLiteStore) FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, error) {
 	var key core.AccessKey
-	var policiesJSON string
 	row := s.db.QueryRowContext(ctx, `
-		SELECT ak.id, ak.secret, ak.principal_name, ak.created_at, p.policies_json
+		SELECT ak.id, ak.secret, ak.principal_name, ak.created_at
 		FROM access_keys ak
-		JOIN principals p ON p.name = ak.principal_name
 		WHERE ak.id = ?`, accessKeyID)
-	if err := row.Scan(&key.ID, &key.Secret, &key.PrincipalName, &key.CreatedAt, &policiesJSON); err != nil {
+	if err := row.Scan(&key.ID, &key.Secret, &key.PrincipalName, &key.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
-			return core.AccessKey{}, nil, core.ErrNotFound
+			return core.AccessKey{}, core.ErrNotFound
 		}
-		return core.AccessKey{}, nil, err
+		return core.AccessKey{}, err
 	}
-	var policies []core.PolicyDocument
-	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
-		return core.AccessKey{}, nil, err
-	}
-	return key, policies, nil
+	return key, nil
 }
 
 func (s *SQLiteStore) GetRole(ctx context.Context, name string) (core.Role, error) {
 	var role core.Role
-	var trustJSON, policiesJSON string
-	row := s.db.QueryRowContext(ctx, `SELECT name, trust_json, policies_json FROM roles WHERE name = ?`, name)
-	if err := row.Scan(&role.Name, &trustJSON, &policiesJSON); err != nil {
+	row := s.db.QueryRowContext(ctx, `SELECT name FROM roles WHERE name = ?`, name)
+	if err := row.Scan(&role.Name); err != nil {
 		if err == sql.ErrNoRows {
 			return core.Role{}, core.ErrNotFound
 		}
-		return core.Role{}, err
-	}
-	if err := json.Unmarshal([]byte(trustJSON), &role.Trust); err != nil {
-		return core.Role{}, err
-	}
-	if err := json.Unmarshal([]byte(policiesJSON), &role.Policies); err != nil {
 		return core.Role{}, err
 	}
 	return role, nil
@@ -525,62 +505,19 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, session core.Session) e
 	return err
 }
 
-func (s *SQLiteStore) GetSession(ctx context.Context, token string) (core.Session, []core.PolicyDocument, error) {
+func (s *SQLiteStore) GetSession(ctx context.Context, token string) (core.Session, error) {
 	var session core.Session
-	var policiesJSON string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT s.token, s.access_key_id, s.secret_key, s.principal_name, s.role_name, s.session_name, s.expires_at, s.created_at
 		FROM sessions s
 		WHERE s.token = ?`, token).Scan(&session.Token, &session.AccessKeyID, &session.SecretKey, &session.PrincipalName, &session.RoleName, &session.SessionName, &session.ExpiresAt, &session.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return core.Session{}, nil, core.ErrNotFound
+			return core.Session{}, core.ErrNotFound
 		}
-		return core.Session{}, nil, err
+		return core.Session{}, err
 	}
-	if session.RoleName != "" {
-		// STS session: get policies from the role
-		err = s.db.QueryRowContext(ctx, `
-			SELECT r.policies_json FROM roles r
-			WHERE r.name = ?`, session.RoleName).Scan(&policiesJSON)
-	} else {
-		// GCS session: get policies from the principal directly
-		err = s.db.QueryRowContext(ctx, `
-			SELECT p.policies_json FROM principals p
-			WHERE p.name = ?`, session.PrincipalName).Scan(&policiesJSON)
-	}
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return core.Session{}, nil, core.ErrNotFound
-		}
-		return core.Session{}, nil, err
-	}
-	var policies []core.PolicyDocument
-	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
-		return core.Session{}, nil, err
-	}
-	return session, policies, nil
-}
-
-func (s *SQLiteStore) GetSessionByAccessKey(ctx context.Context, accessKeyID string) (core.Session, []core.PolicyDocument, error) {
-	var session core.Session
-	var policiesJSON string
-	row := s.db.QueryRowContext(ctx, `
-		SELECT s.token, s.access_key_id, s.secret_key, s.principal_name, s.role_name, s.session_name, s.expires_at, s.created_at, r.policies_json
-		FROM sessions s
-		JOIN roles r ON r.name = s.role_name
-		WHERE s.access_key_id = ?`, accessKeyID)
-	if err := row.Scan(&session.Token, &session.AccessKeyID, &session.SecretKey, &session.PrincipalName, &session.RoleName, &session.SessionName, &session.ExpiresAt, &session.CreatedAt, &policiesJSON); err != nil {
-		if err == sql.ErrNoRows {
-			return core.Session{}, nil, core.ErrNotFound
-		}
-		return core.Session{}, nil, err
-	}
-	var policies []core.PolicyDocument
-	if err := json.Unmarshal([]byte(policiesJSON), &policies); err != nil {
-		return core.Session{}, nil, err
-	}
-	return session, policies, nil
+	return session, nil
 }
 
 func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
@@ -707,14 +644,10 @@ func putObject(ctx context.Context, runner sqlRunner, meta core.ObjectMetadata) 
 }
 
 func upsertPrincipal(ctx context.Context, runner sqlRunner, principal core.Principal) error {
-	policiesJSON, err := json.Marshal(principal.Policies)
-	if err != nil {
-		return err
-	}
-	_, err = runner.ExecContext(ctx, `
-		INSERT INTO principals(name, policies_json, created_at) VALUES(?, ?, ?)
+	_, err := runner.ExecContext(ctx, `
+		INSERT INTO principals(name, policies_json, created_at) VALUES(?, '{}', ?)
 		ON CONFLICT(name) DO UPDATE SET policies_json = excluded.policies_json`,
-		principal.Name, string(policiesJSON), time.Now().UTC(),
+		principal.Name, time.Now().UTC(),
 	)
 	return err
 }
@@ -729,18 +662,10 @@ func upsertAccessKey(ctx context.Context, runner sqlRunner, id, secret, principa
 }
 
 func upsertRole(ctx context.Context, runner sqlRunner, role core.Role) error {
-	trustJSON, err := json.Marshal(role.Trust)
-	if err != nil {
-		return err
-	}
-	policiesJSON, err := json.Marshal(role.Policies)
-	if err != nil {
-		return err
-	}
-	_, err = runner.ExecContext(ctx, `
-		INSERT INTO roles(name, trust_json, policies_json, created_at) VALUES(?, ?, ?, ?)
+	_, err := runner.ExecContext(ctx, `
+		INSERT INTO roles(name, trust_json, policies_json, created_at) VALUES(?, '{}', '{}', ?)
 		ON CONFLICT(name) DO UPDATE SET trust_json = excluded.trust_json, policies_json = excluded.policies_json`,
-		role.Name, string(trustJSON), string(policiesJSON), time.Now().UTC(),
+		role.Name, time.Now().UTC(),
 	)
 	return err
 }

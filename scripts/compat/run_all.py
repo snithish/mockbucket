@@ -39,7 +39,7 @@ CLOUDS = {
 def cmd_serve(_args: argparse.Namespace) -> None:
     """Start the server with all frontends enabled and block."""
     # Default to S3 for serve mode since it's the most common.
-    start_server({"s3": True, "sts": True, "gcs": False})
+    start_server({"s3": True, "gcs": False})
     print()
     print(f"  {_c(_BOLD, 'mockbucketd')} running")
     print()

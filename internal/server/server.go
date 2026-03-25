@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	authaws "github.com/snithish/mockbucket/internal/auth/aws"
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends"
@@ -55,9 +54,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		_ = metadata.Close()
 		return nil, fmt.Errorf("apply seed: %w", err)
 	}
-	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, TrustEvaluator: iam.TrustEvaluator{}, DefaultDuration: cfg.Auth.SessionDuration}}
+	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, DefaultDuration: cfg.Auth.SessionDuration}}
 
-	// Generate service accounts for GCS JWT flow
 	var gcsServiceAccounts []seed.ServiceAccountJSON
 	if cfg.Frontends.GCS {
 		host, port, err := parseServerAddress(cfg.Server.Address)
@@ -70,7 +68,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 				return nil, fmt.Errorf("generate service account for %s: %w", principal.Name, err)
 			}
 			gcsServiceAccounts = append(gcsServiceAccounts, sa)
-			// Store service account with placeholder token in database
 			if err := metadata.UpsertServiceAccount(ctx, core.ServiceAccount{
 				ClientEmail: sa.ClientEmail,
 				Principal:   principal.Name,
@@ -85,9 +82,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		Metadata:       metadata,
 		Objects:        objects,
 		AuthResolver:   authResolver,
-		Policy:         iam.Evaluator{},
 		SessionManager: authResolver.SessionManager,
-		AWSVerifier:    authaws.Verifier{},
 	}
 	mux := http.NewServeMux()
 	registerHealth(mux, cfg, metadata)
@@ -176,7 +171,7 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 			details.Metadata.Healthy = true
 		}
 		details.Frontends.S3 = cfg.Frontends.S3
-		details.Frontends.STS = cfg.Frontends.STS
+		details.Frontends.STS = cfg.Frontends.S3
 		details.Frontends.GCS = cfg.Frontends.GCS
 		details.Frontends.Azure = cfg.Frontends.Azure
 		details.Seed.Buckets = len(cfg.Seed.Buckets)
@@ -232,7 +227,6 @@ func convertGCSConfigTokens(tokens []config.GCSToken) []seed.GCSTokenSeed {
 	return result
 }
 
-// parseServerAddress parses the server address like "127.0.0.1:9000" and returns host and port.
 func parseServerAddress(addr string) (string, int, error) {
 	for i := len(addr) - 1; i >= 0; i-- {
 		if addr[i] == ':' {

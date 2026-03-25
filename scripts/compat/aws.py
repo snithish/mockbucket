@@ -14,7 +14,7 @@ from parquet import read_count, s3_con, write_parquet_s3
 
 def configure() -> dict:
     """Return config overrides for the AWS (S3+STS) frontend."""
-    return {"s3": True, "sts": True, "gcs": False}
+    return {"s3": True, "gcs": False}
 
 
 def export_env() -> dict[str, str]:
@@ -33,6 +33,7 @@ def run() -> int:
     errors += _test_awscli()
     errors += _test_boto3()
     errors += _test_multipart()
+    errors += _test_sts_assume_role()
     errors += _test_duckdb()
     return errors
 
@@ -159,6 +160,68 @@ def _test_multipart() -> int:
         return 1
 
     ok("boto3 multipart")
+    return 0
+
+
+def _test_sts_assume_role() -> int:
+    import boto3
+
+    sts = boto3.client(
+        "sts",
+        endpoint_url=ENDPOINT,
+        region_name=os.environ["AWS_REGION"],
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    )
+
+    # Assume a role defined in seed data.
+    resp = sts.assume_role(
+        RoleArn="arn:mockbucket:iam::role/data-reader",
+        RoleSessionName="compat-test",
+    )
+
+    creds = resp.get("Credentials")
+    if not creds:
+        fail("sts assume_role — missing Credentials in response")
+        return 1
+
+    access_key = creds.get("AccessKeyId")
+    secret_key = creds.get("SecretAccessKey")
+    session_token = creds.get("SessionToken")
+
+    if not access_key or not secret_key or not session_token:
+        fail(f"sts assume_role — incomplete credentials: {creds}")
+        return 1
+
+    assumed_user = resp.get("AssumedRoleUser", {})
+    if not assumed_user.get("Arn"):
+        fail("sts assume_role — missing AssumedRoleUser.Arn")
+        return 1
+
+    # Use the temporary credentials with S3.
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT,
+        region_name=os.environ["AWS_REGION"],
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        aws_session_token=session_token,
+    )
+
+    # Verify we can list buckets with the assumed-role credentials.
+    buckets = [b["Name"] for b in s3.list_buckets().get("Buckets", [])]
+    if "demo" not in buckets:
+        fail("sts assume_role — S3 list_buckets with session creds failed")
+        return 1
+
+    # Verify we can read an object with the assumed-role credentials.
+    obj = s3.get_object(Bucket="demo", Key="bootstrap/hello.txt")
+    body = obj["Body"].read().decode("utf-8")
+    if body != "hello from mockbucket":
+        fail(f"sts assume_role — S3 get_object body={body!r}, want 'hello from mockbucket'")
+        return 1
+
+    ok("sts assume_role")
     return 0
 
 

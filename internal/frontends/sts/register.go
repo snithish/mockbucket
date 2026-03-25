@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	authaws "github.com/snithish/mockbucket/internal/auth/aws"
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
@@ -18,9 +17,9 @@ const xmlNamespace = "https://sts.amazonaws.com/doc/2011-06-15/"
 func Register(_ *http.ServeMux, _ config.Config, _ common.Dependencies) {}
 
 func RootHandler(_ config.Config, deps common.Dependencies) http.Handler {
-	return authaws.Authenticate("sts", deps.AWSVerifier, deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleAssumeRole(w, r, deps)
-	}))
+	})
 }
 
 func IsQueryRequest(r *http.Request) bool {
@@ -45,21 +44,7 @@ func handleAssumeRole(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	subject, ok := httpx.SubjectFromContext(r.Context())
-	if !ok {
-		writeError(w, core.ErrUnauthenticated)
-		return
-	}
-	principalName := subject.PrincipalName
-	if principalName == "" {
-		principalName = subject.Name()
-	}
-	resource := fmt.Sprintf("arn:mockbucket:iam:::role/%s", roleName)
-	if !deps.Policy.Allowed("sts:AssumeRole", resource, subject.Policies) {
-		writeError(w, core.ErrAccessDenied)
-		return
-	}
-	session, err := deps.SessionManager.AssumeRole(r.Context(), principalName, roleName, sessionName)
+	session, err := deps.SessionManager.AssumeRole(r.Context(), roleName, sessionName)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -86,18 +86,6 @@ func (d Document) Validate() error {
 			problems = append(problems, fmt.Sprintf("roles[%d].name is required", i))
 			continue
 		}
-		for j, statement := range role.Trust.Statements {
-			if len(statement.Principals) == 0 {
-				problems = append(problems, fmt.Sprintf("roles[%d].trust.statements[%d] requires principals", i, j))
-			}
-			for _, principal := range statement.Principals {
-				if principal != "*" {
-					if _, ok := principalSet[principal]; !ok {
-						problems = append(problems, fmt.Sprintf("roles[%d].trust references unknown principal %q", i, principal))
-					}
-				}
-			}
-		}
 	}
 	for i, object := range d.Objects {
 		if _, ok := bucketSet[object.Bucket]; !ok {

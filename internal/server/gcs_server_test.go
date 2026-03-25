@@ -36,20 +36,6 @@ func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
 	// Create a role for service accounts.
 	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
 		Name: "gcs-service-account",
-		Trust: core.TrustPolicyDocument{
-			Statements: []core.TrustStatement{{
-				Effect:     core.EffectAllow,
-				Principals: []string{"*"},
-				Actions:    []string{"sts:AssumeRole"},
-			}},
-		},
-		Policies: []core.PolicyDocument{{
-			Statements: []core.PolicyStatement{{
-				Effect:    core.EffectAllow,
-				Actions:   []string{"*"},
-				Resources: []string{"*"},
-			}},
-		}},
 	}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -113,20 +99,6 @@ func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
 
 	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
 		Name: "gcs-service-account",
-		Trust: core.TrustPolicyDocument{
-			Statements: []core.TrustStatement{{
-				Effect:     core.EffectAllow,
-				Principals: []string{"*"},
-				Actions:    []string{"sts:AssumeRole"},
-			}},
-		},
-		Policies: []core.PolicyDocument{{
-			Statements: []core.PolicyStatement{{
-				Effect:    core.EffectAllow,
-				Actions:   []string{"*"},
-				Resources: []string{"*"},
-			}},
-		}},
 	}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}

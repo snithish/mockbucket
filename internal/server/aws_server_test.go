@@ -3,9 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -15,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"gopkg.in/yaml.v3"
 
 	mbconfig "github.com/snithish/mockbucket/internal/config"
@@ -26,7 +23,7 @@ func TestS3FrontendContract(t *testing.T) {
 }
 
 func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
-	runtime := newAWSTestRuntime(t, true)
+	runtime := newAWSTestRuntime(t)
 	defer func() { _ = runtime.Close() }()
 
 	stsClient := newSTSClient(t, runtime, "admin", "admin-secret", "")
@@ -54,28 +51,13 @@ func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 	}
 }
 
-func TestS3RejectsBadSignature(t *testing.T) {
-	runtime := newAWSTestRuntime(t, false)
-	defer func() { _ = runtime.Close() }()
-
-	svc := newS3Client(t, runtime, "admin", "wrong-secret", "")
-	_, err := svc.ListBuckets(context.Background(), &s3.ListBucketsInput{})
-	if err == nil {
-		t.Fatal("ListBuckets() error = nil, want signature error")
-	}
-	var respErr *smithyhttp.ResponseError
-	if !errors.As(err, &respErr) || respErr.HTTPStatusCode() != http.StatusBadRequest {
-		t.Fatalf("ListBuckets() error = %v, want 400 response error", err)
-	}
-}
-
 type s3ContractClient struct {
 	svc *s3.Client
 }
 
 func newS3ContractClient(t *testing.T) frontendContractClient {
 	t.Helper()
-	runtime := newAWSTestRuntime(t, false)
+	runtime := newAWSTestRuntime(t)
 	t.Cleanup(func() { _ = runtime.Close() })
 	return &s3ContractClient{svc: newS3Client(t, runtime, "admin", "admin-secret", "")}
 }
@@ -194,15 +176,12 @@ func (c *s3ContractClient) MultipartUpload(ctx context.Context, bucket, key stri
 	return err
 }
 
-func newAWSTestRuntime(t *testing.T, enableSTS bool) *Runtime {
+func newAWSTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	return newTestRuntime(t, func(cfg *mbconfig.Config) {
 		cfg.Frontends.S3 = true
-		cfg.Frontends.STS = enableSTS
-		if enableSTS {
-			if err := yaml.Unmarshal([]byte(awsSTSTestSeedYAML), &cfg.Seed); err != nil {
-				t.Fatalf("parse sts seed: %v", err)
-			}
+		if err := yaml.Unmarshal([]byte(awsSTSTestSeedYAML), &cfg.Seed); err != nil {
+			t.Fatalf("parse sts seed: %v", err)
 		}
 	})
 }
@@ -245,11 +224,6 @@ const awsSTSTestSeedYAML = `buckets:
   - demo
 principals:
   - name: admin
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["*"]
-            resources: ["*"]
 s3:
   access_keys:
     - id: admin
@@ -257,14 +231,4 @@ s3:
       principal: admin
 roles:
   - name: data-reader
-    trust:
-      statements:
-        - effect: Allow
-          principals: ["admin"]
-          actions: ["sts:AssumeRole"]
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["s3:ListBucket", "s3:GetObject"]
-            resources: ["arn:mockbucket:s3:::demo", "arn:mockbucket:s3:::demo/*"]
 `

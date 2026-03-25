@@ -7,7 +7,6 @@ storage:
   sqlite_path: ./var/mockbucket.db
 frontends:
   s3: true
-  sts: true
   gcs: false
   azure: false
 auth:
@@ -17,23 +16,8 @@ seed:
     - demo
   principals:
     - name: admin
-      policies:
-        - statements:
-            - effect: Allow
-              actions: ["*"]
-              resources: ["*"]
   roles:
     - name: data-reader
-      trust:
-        statements:
-          - effect: Allow
-            principals: ["admin"]
-            actions: ["sts:AssumeRole"]
-      policies:
-        - statements:
-            - effect: Allow
-              actions: ["s3:GetObject", "s3:ListBucket"]
-              resources: ["arn:mockbucket:s3:::demo", "arn:mockbucket:s3:::demo/*"]
   s3:
     access_keys:
       - id: admin

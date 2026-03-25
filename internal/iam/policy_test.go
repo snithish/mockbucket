@@ -10,17 +10,6 @@ import (
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
-func TestEvaluatorHonorsExplicitDeny(t *testing.T) {
-	evaluator := Evaluator{}
-	policies := []core.PolicyDocument{{Statements: []core.PolicyStatement{{Effect: core.EffectAllow, Actions: []string{"s3:*"}, Resources: []string{"*"}}, {Effect: core.EffectDeny, Actions: []string{"s3:DeleteObject"}, Resources: []string{"*"}}}}}
-	if evaluator.Allowed("s3:GetObject", "arn:mockbucket:s3:::demo/key", policies) != true {
-		t.Fatal("Allowed(get) = false, want true")
-	}
-	if evaluator.Allowed("s3:DeleteObject", "arn:mockbucket:s3:::demo/key", policies) != false {
-		t.Fatal("Allowed(delete) = true, want false")
-	}
-}
-
 func TestSessionManagerAssumeRole(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
@@ -28,11 +17,11 @@ func TestSessionManagerAssumeRole(t *testing.T) {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
 	defer func() { _ = store.Close() }()
-	if err := store.UpsertRole(ctx, core.Role{Name: "reader", Trust: core.TrustPolicyDocument{Statements: []core.TrustStatement{{Effect: core.EffectAllow, Principals: []string{"admin"}, Actions: []string{"sts:AssumeRole"}}}}, Policies: []core.PolicyDocument{{Statements: []core.PolicyStatement{{Effect: core.EffectAllow, Actions: []string{"s3:GetObject"}, Resources: []string{"*"}}}}}}); err != nil {
+	if err := store.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
-	manager := SessionManager{Store: store, TrustEvaluator: TrustEvaluator{}, DefaultDuration: time.Hour}
-	session, err := manager.AssumeRole(ctx, "admin", "reader", "cli")
+	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
+	session, err := manager.AssumeRole(ctx, "reader", "cli")
 	if err != nil {
 		t.Fatalf("AssumeRole() error = %v", err)
 	}
@@ -42,5 +31,18 @@ func TestSessionManagerAssumeRole(t *testing.T) {
 	}
 	if subject.RoleName != "reader" {
 		t.Fatalf("role name = %q, want reader", subject.RoleName)
+	}
+}
+
+func TestSessionManagerAssumeRoleRejectsUnknownRole(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
+	if _, err := manager.AssumeRole(ctx, "nonexistent", "cli"); err == nil {
+		t.Fatal("AssumeRole() error = nil, want error for unknown role")
 	}
 }

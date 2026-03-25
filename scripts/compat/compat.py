@@ -59,23 +59,8 @@ buckets:
   - demo
 principals:
   - name: admin
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["*"]
-            resources: ["*"]
 roles:
   - name: data-reader
-    trust:
-      statements:
-        - effect: Allow
-          principals: ["admin"]
-          actions: ["sts:AssumeRole"]
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["s3:GetObject", "s3:ListBucket"]
-            resources: ["arn:mockbucket:s3:::demo", "arn:mockbucket:s3:::demo/*"]
 s3:
   access_keys:
     - id: admin
@@ -103,7 +88,6 @@ storage:
   sqlite_path: {tmp_dir}/mockbucket.db
 frontends:
   s3: {"true" if frontends.get("s3") else "false"}
-  sts: {"true" if frontends.get("sts") else "false"}
   gcs: {"true" if frontends.get("gcs") else "false"}
   azure: false
 auth:

@@ -10,21 +10,21 @@ import (
 )
 
 func registerAWSRoot(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
-	if !cfg.Frontends.S3 && !cfg.Frontends.STS {
+	if !cfg.Frontends.S3 {
 		return
 	}
 	s3Root := s3.RootHandler(cfg, deps)
 	stsRoot := sts.RootHandler(cfg, deps)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.Frontends.STS && r.URL.Path == "/" && r.Method == http.MethodPost {
+		if r.URL.Path == "/" && r.Method == http.MethodPost {
 			stsRoot.ServeHTTP(w, r)
 			return
 		}
-		if cfg.Frontends.STS && r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("Action") != "" {
+		if r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("Action") != "" {
 			stsRoot.ServeHTTP(w, r)
 			return
 		}
-		if cfg.Frontends.S3 && r.URL.Path == "/" && r.Method == http.MethodGet {
+		if r.URL.Path == "/" && r.Method == http.MethodGet {
 			s3Root.ServeHTTP(w, r)
 			return
 		}

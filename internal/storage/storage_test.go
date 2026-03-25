@@ -67,29 +67,19 @@ func TestSessionRoundTrip(t *testing.T) {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
 	defer func() { _ = metadata.Close() }()
-	role := core.Role{
-		Name: "reader",
-		Policies: []core.PolicyDocument{{
-			Statements: []core.PolicyStatement{{
-				Effect:    core.EffectAllow,
-				Actions:   []string{"s3:GetObject"},
-				Resources: []string{"*"},
-			}},
-		}},
-	}
-	if err := metadata.UpsertRole(ctx, role); err != nil {
+	if err := metadata.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
 	session := core.Session{Token: "token", AccessKeyID: "ak", SecretKey: "sk", PrincipalName: "admin", RoleName: "reader", SessionName: "cli", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	if err := metadata.CreateSession(ctx, session); err != nil {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
-	stored, policies, err := metadata.GetSession(ctx, "token")
+	stored, err := metadata.GetSession(ctx, "token")
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
-	if stored.RoleName != "reader" || len(policies) != 1 {
-		t.Fatalf("unexpected session round trip: %+v policies=%d", stored, len(policies))
+	if stored.RoleName != "reader" {
+		t.Fatalf("unexpected session round trip: %+v", stored)
 	}
 }
 

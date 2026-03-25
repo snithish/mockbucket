@@ -7,13 +7,11 @@ storage:
   sqlite_path: ./var/mockbucket.db
 frontends:
   s3: true
-  sts: true
   gcs: false
   azure: false
 # Supported profiles:
-# - S3 + STS: s3: true, sts: true, gcs: false
-# - S3 only: s3: true, sts: false, gcs: false
-# - GCS only: s3: false, sts: false, gcs: true
+# - S3 (with STS): s3: true, gcs: false
+# - GCS only: s3: false, gcs: true
 # - GCS auth: use gcs.tokens for hardcoded bearer tokens
 #   OR auto-generated JWT: fetch GET /api/v1/gcs/service-account
 auth:
@@ -23,23 +21,8 @@ seed:
     - demo
   principals:
     - name: admin
-      policies:
-        - statements:
-            - effect: Allow
-              actions: ["*"]
-              resources: ["*"]
   roles:
     - name: data-reader
-      trust:
-        statements:
-          - effect: Allow
-            principals: ["admin"]
-            actions: ["sts:AssumeRole"]
-      policies:
-        - statements:
-            - effect: Allow
-              actions: ["s3:GetObject", "s3:ListBucket"]
-              resources: ["arn:mockbucket:s3:::demo", "arn:mockbucket:s3:::demo/*"]
   s3:
     access_keys:
       - id: admin

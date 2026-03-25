@@ -13,11 +13,9 @@ func TestValidateFrontends(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "s3 only", config: config.Config{Frontends: config.FrontendConfig{S3: true}}},
-		{name: "s3+sts", config: config.Config{Frontends: config.FrontendConfig{S3: true, STS: true}}},
 		{name: "gcs only", config: config.Config{Frontends: config.FrontendConfig{GCS: true}}},
 		{name: "azure blocked", config: config.Config{Frontends: config.FrontendConfig{Azure: true}}, wantErr: true},
 		{name: "s3+gcs invalid", config: config.Config{Frontends: config.FrontendConfig{S3: true, GCS: true}}, wantErr: true},
-		{name: "sts without s3 invalid", config: config.Config{Frontends: config.FrontendConfig{STS: true}}, wantErr: true},
 	}
 	for _, tt := range cases {
 		if err := Validate(tt.config); (err != nil) != tt.wantErr {

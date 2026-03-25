@@ -68,7 +68,6 @@ type GCSToken struct {
 
 type FrontendConfig struct {
 	S3    bool `yaml:"s3"`
-	STS   bool `yaml:"sts"`
 	GCS   bool `yaml:"gcs"`
 	Azure bool `yaml:"azure"`
 }

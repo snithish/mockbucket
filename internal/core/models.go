@@ -17,33 +17,6 @@ type Bucket struct {
 	CreatedAt time.Time
 }
 
-type Effect string
-
-const (
-	EffectAllow Effect = "Allow"
-	EffectDeny  Effect = "Deny"
-)
-
-type PolicyStatement struct {
-	Effect    Effect   `json:"effect" yaml:"effect"`
-	Actions   []string `json:"actions" yaml:"actions"`
-	Resources []string `json:"resources" yaml:"resources"`
-}
-
-type PolicyDocument struct {
-	Statements []PolicyStatement `json:"statements" yaml:"statements"`
-}
-
-type TrustStatement struct {
-	Effect     Effect   `json:"effect" yaml:"effect"`
-	Principals []string `json:"principals" yaml:"principals"`
-	Actions    []string `json:"actions" yaml:"actions"`
-}
-
-type TrustPolicyDocument struct {
-	Statements []TrustStatement `json:"statements" yaml:"statements"`
-}
-
 type AccessKey struct {
 	ID            string    `json:"id" yaml:"id"`
 	Secret        string    `json:"secret" yaml:"secret"`
@@ -52,14 +25,11 @@ type AccessKey struct {
 }
 
 type Principal struct {
-	Name     string           `json:"name" yaml:"name"`
-	Policies []PolicyDocument `json:"policies" yaml:"policies"`
+	Name string `json:"name" yaml:"name"`
 }
 
 type Role struct {
-	Name     string              `json:"name" yaml:"name"`
-	Trust    TrustPolicyDocument `json:"trust" yaml:"trust"`
-	Policies []PolicyDocument    `json:"policies" yaml:"policies"`
+	Name string `json:"name" yaml:"name"`
 }
 
 type Session struct {
@@ -89,18 +59,9 @@ type MultipartPart struct {
 	CreatedAt  time.Time
 }
 
-type CredentialIdentity struct {
-	AccessKeyID   string
-	SecretKey     string
-	SessionToken  string
-	PrincipalName string
-	Subject       Subject
-}
-
 type Subject struct {
 	PrincipalName string
 	RoleName      string
-	Policies      []PolicyDocument
 }
 
 func (s Subject) Name() string {

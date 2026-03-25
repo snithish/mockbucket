@@ -78,11 +78,6 @@ const defaultTestSeedYAML = `buckets:
   - demo
 principals:
   - name: admin
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["*"]
-            resources: ["*"]
 s3:
   access_keys:
     - id: admin

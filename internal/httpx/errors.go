@@ -17,7 +17,7 @@ func StatusCode(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, core.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, core.ErrInvalidArgument), errors.Is(err, core.ErrSignatureMismatch):
+	case errors.Is(err, core.ErrInvalidArgument):
 		return http.StatusBadRequest
 	case errors.Is(err, core.ErrExpiredToken):
 		return http.StatusUnauthorized
