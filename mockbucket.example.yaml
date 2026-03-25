@@ -14,6 +14,8 @@ frontends:
 # - S3 + STS: s3: true, sts: true, gcs: false
 # - S3 only: s3: true, sts: false, gcs: false
 # - GCS only: s3: false, sts: false, gcs: true
+# - GCS auth: use gcs.tokens for hardcoded bearer tokens
+#   OR auto-generated JWT: fetch GET /api/v1/gcs/service-account
 auth:
   session_duration: 1h
 seed:
@@ -42,6 +44,10 @@ seed:
     access_keys:
       - id: admin
         secret: admin-secret
+        principal: admin
+  gcs:
+    tokens:
+      - token: "hardcoded-token-123"
         principal: admin
   objects:
     - bucket: demo

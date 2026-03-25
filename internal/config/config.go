@@ -58,7 +58,12 @@ type SeedS3AccessKey struct {
 }
 
 type SeedGCSConfig struct {
-	Accounts []core.ServiceAccount `yaml:"accounts"`
+	Tokens []GCSToken `yaml:"tokens"`
+}
+
+type GCSToken struct {
+	Token     string `yaml:"token"`
+	Principal string `yaml:"principal"`
 }
 
 type FrontendConfig struct {

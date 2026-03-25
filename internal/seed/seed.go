@@ -37,7 +37,12 @@ type S3AccessKeySeed struct {
 }
 
 type GCSSeedConfig struct {
-	Accounts []core.ServiceAccount `yaml:"accounts"`
+	Tokens []GCSTokenSeed `yaml:"tokens"`
+}
+
+type GCSTokenSeed struct {
+	Token     string `yaml:"token"`
+	Principal string `yaml:"principal"`
 }
 
 func Load(path string) (Document, error) {
@@ -123,21 +128,19 @@ func (d Document) Validate() error {
 		}
 	}
 	tokenSet := map[string]struct{}{}
-	for i, sa := range d.GCS.Accounts {
-		if strings.TrimSpace(sa.ClientEmail) == "" {
-			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].client_email is required", i))
+	for i, t := range d.GCS.Tokens {
+		if strings.TrimSpace(t.Token) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].token is required", i))
 		}
-		if strings.TrimSpace(sa.Principal) == "" {
-			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].principal is required", i))
-		} else if _, ok := principalSet[sa.Principal]; !ok {
-			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].principal references unknown principal %q", i, sa.Principal))
+		if strings.TrimSpace(t.Principal) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].principal is required", i))
+		} else if _, ok := principalSet[t.Principal]; !ok {
+			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].principal references unknown principal %q", i, t.Principal))
 		}
-		if strings.TrimSpace(sa.Token) == "" {
-			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].token is required", i))
-		} else if _, ok := tokenSet[sa.Token]; ok {
-			problems = append(problems, fmt.Sprintf("gcs.accounts[%d].token %q is not unique", i, sa.Token))
+		if _, ok := tokenSet[t.Token]; ok {
+			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].token %q is not unique", i, t.Token))
 		} else {
-			tokenSet[sa.Token] = struct{}{}
+			tokenSet[t.Token] = struct{}{}
 		}
 	}
 	if len(problems) > 0 {

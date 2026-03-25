@@ -28,6 +28,12 @@ func Apply(ctx context.Context, doc Document, metadata *storage.SQLiteStore, obj
 			Principal: key.Principal,
 		})
 	}
-	state.ServiceAccounts = append([]core.ServiceAccount(nil), doc.GCS.Accounts...)
+	for _, t := range doc.GCS.Tokens {
+		state.ServiceAccounts = append(state.ServiceAccounts, core.ServiceAccount{
+			ClientEmail: "", // Not used for hardcoded token flow
+			Principal:   t.Principal,
+			Token:       t.Token,
+		})
+	}
 	return metadata.ApplySeedState(ctx, state, objects)
 }

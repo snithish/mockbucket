@@ -56,6 +56,31 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		return nil, fmt.Errorf("apply seed: %w", err)
 	}
 	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, TrustEvaluator: iam.TrustEvaluator{}, DefaultDuration: cfg.Auth.SessionDuration}}
+
+	// Generate service accounts for GCS JWT flow
+	var gcsServiceAccounts []seed.ServiceAccountJSON
+	if cfg.Frontends.GCS {
+		host, port, err := parseServerAddress(cfg.Server.Address)
+		if err != nil {
+			return nil, fmt.Errorf("parse server address: %w", err)
+		}
+		for _, principal := range cfg.Seed.Principals {
+			sa, err := seed.GenerateServiceAccountJSON(host, port, principal.Name)
+			if err != nil {
+				return nil, fmt.Errorf("generate service account for %s: %w", principal.Name, err)
+			}
+			gcsServiceAccounts = append(gcsServiceAccounts, sa)
+			// Store service account with placeholder token in database
+			if err := metadata.UpsertServiceAccount(ctx, core.ServiceAccount{
+				ClientEmail: sa.ClientEmail,
+				Principal:   principal.Name,
+				Token:       fmt.Sprintf("jwt:%s", sa.ClientEmail),
+			}); err != nil {
+				return nil, fmt.Errorf("store service account: %w", err)
+			}
+		}
+	}
+
 	deps := common.Dependencies{
 		Metadata:       metadata,
 		Objects:        objects,
@@ -66,7 +91,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	}
 	mux := http.NewServeMux()
 	registerHealth(mux, cfg, metadata)
-	frontends.Register(mux, cfg, deps)
+	frontends.Register(mux, cfg, deps, gcsServiceAccounts)
 	handler := httpx.RequestID(httpx.RequestLog(logger, cfg.Server.RequestLog, mux))
 	return &Runtime{
 		Config:        cfg,
@@ -176,7 +201,7 @@ func seedDocument(s config.SeedData) seed.Document {
 			AccessKeys: make([]seed.S3AccessKeySeed, 0, len(s.S3.AccessKeys)),
 		},
 		GCS: seed.GCSSeedConfig{
-			Accounts: append([]core.ServiceAccount(nil), s.GCS.Accounts...),
+			Tokens: convertGCSConfigTokens(s.GCS.Tokens),
 		},
 	}
 	for _, o := range s.Objects {
@@ -194,4 +219,34 @@ func seedDocument(s config.SeedData) seed.Document {
 		})
 	}
 	return doc
+}
+
+func convertGCSConfigTokens(tokens []config.GCSToken) []seed.GCSTokenSeed {
+	result := make([]seed.GCSTokenSeed, 0, len(tokens))
+	for _, t := range tokens {
+		result = append(result, seed.GCSTokenSeed{
+			Token:     t.Token,
+			Principal: t.Principal,
+		})
+	}
+	return result
+}
+
+// parseServerAddress parses the server address like "127.0.0.1:9000" and returns host and port.
+func parseServerAddress(addr string) (string, int, error) {
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			host := addr[:i]
+			port := addr[i+1:]
+			var portNum int
+			if _, err := fmt.Sscanf(port, "%d", &portNum); err != nil {
+				return "", 0, fmt.Errorf("invalid port: %w", err)
+			}
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			return host, portNum, nil
+		}
+	}
+	return "", 0, fmt.Errorf("invalid address: %s", addr)
 }

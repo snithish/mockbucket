@@ -18,6 +18,17 @@ type Authenticator interface {
 	ResolveAccessKey(ctx context.Context, accessKeyID string) (core.Subject, error)
 }
 
+type JWTTokenIssuer interface {
+	// IssueTokenFromJWT validates a JWT assertion, extracts the client email,
+	// looks up the service account, and issues a new bearer token.
+	IssueTokenFromJWT(ctx context.Context, jwtAssertion string) (core.Session, error)
+}
+
+type GCSTokenIssuer interface {
+	// IssueTokenForPrincipal issues a simple bearer token for a GCS principal.
+	IssueTokenForPrincipal(ctx context.Context, principalName string) (core.Session, error)
+}
+
 // Authenticate wraps next with GCS-style request authentication.
 // Accepted credential sources (checked in order):
 //  1. Authorization: Bearer <token>  — resolved as a session token
@@ -105,15 +116,15 @@ func TokenEndpoint(resolver iam.Resolver, sessionManager iam.SessionManager) htt
 		}
 
 		// Resolve the client email to verify it maps to a known service account.
-		_, err := resolver.Store.FindServiceAccountByEmail(r.Context(), clientEmail)
+		sa, err := resolver.Store.FindServiceAccountByEmail(r.Context(), clientEmail)
 		if err != nil {
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return
 		}
 
-		// Issue a session token. Use the client email as both principal and
-		// session identity.
-		session, err := sessionManager.AssumeRole(r.Context(), clientEmail, "gcs-service-account", clientEmail)
+		// Issue a session token using the service account's principal name.
+		// For GCS JWT flow, no STS role assumption needed.
+		session, err := sessionManager.IssueTokenForPrincipal(r.Context(), sa.Principal)
 		if err != nil {
 			http.Error(w, "invalid_client: "+err.Error(), http.StatusUnauthorized)
 			return

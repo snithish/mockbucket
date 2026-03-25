@@ -1,8 +1,10 @@
 """GCS compatibility tests using the google-cloud-storage Python SDK."""
 from __future__ import annotations
 
+import json
 import os
 import sys
+import urllib.request
 
 from compat import ENDPOINT, fail, ok, skip
 
@@ -19,28 +21,7 @@ principals:
           - effect: Allow
             actions: ["*"]
             resources: ["*"]
-gcs:
-  accounts:
-    - client_email: gcs-admin@mock.iam.gserviceaccount.com
-      token: gcs-static-test-token
-      principal: gcs-admin
 """
-
-STATIC_TOKEN = "gcs-static-test-token"
-
-
-class SeedCredentials(credentials.Credentials):
-    """google-auth credentials that reads a static bearer token from env."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.token = os.environ.get("MOCKBUCKET_GCS_TOKEN", STATIC_TOKEN)
-
-    def refresh(self, _request) -> None:
-        pass
-
-    def before_request(self, request, method, url, headers):
-        headers["authorization"] = f"Bearer {self.token}"
 
 
 def configure() -> dict:
@@ -55,17 +36,38 @@ def seed() -> str:
 
 def export_env() -> dict[str, str]:
     """Return env vars for GCS tests."""
-    return {"MOCKBUCKET_GCS_TOKEN": STATIC_TOKEN}
+    return {}
+
+
+def _fetch_service_account_info() -> dict:
+    """Fetch service account JSON from the mock server."""
+    url = f"{ENDPOINT}/api/v1/gcs/service-account"
+    try:
+        resp = urllib.request.urlopen(url)
+        data = json.loads(resp.read())
+        accounts = data.get("service_accounts", [])
+        if not accounts:
+            raise RuntimeError("No service accounts returned from /api/v1/gcs/service-account")
+        # Use the first service account (gcs-admin)
+        for account in accounts:
+            if account.get("client_email", "").startswith("gcs-admin@"):
+                return account["secret_json"]
+        # Fall back to first account if no match
+        return accounts[0]["secret_json"]
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch service account JSON: {e}") from e
 
 
 def _make_client() -> "storage.Client":
     """Create a google-cloud-storage client pointed at our mock server."""
     from google.cloud import storage
+    from google.oauth2 import service_account
 
-    creds = SeedCredentials()
+    service_account_info = _fetch_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(service_account_info)
     return storage.Client(
         credentials=creds,
-        project="mock-project",
+        project="mockbucket",
         client_options={"api_endpoint": ENDPOINT},
     )
 
@@ -144,9 +146,11 @@ def _test_objects() -> int:
 def _test_multipart() -> int:
     """Test multipart upload via google-resumable-media."""
     from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2 import service_account
     from google.resumable_media.requests import MultipartUpload
 
-    creds = SeedCredentials()
+    service_account_info = _fetch_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(service_account_info)
     transport = AuthorizedSession(creds)
 
     key = "compat/multipart-test.txt"

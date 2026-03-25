@@ -20,6 +20,7 @@ import (
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/httpx"
+	"github.com/snithish/mockbucket/internal/seed"
 )
 
 const (
@@ -28,10 +29,13 @@ const (
 	downloadBasePath = "/download/storage/v1/b"
 )
 
-func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
+func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, gcsServiceAccounts []seed.ServiceAccountJSON) {
 	if !cfg.Frontends.GCS {
 		return
 	}
+
+	RegisterServiceAccountEndpoint(mux, gcsServiceAccounts)
+
 	bucketsHandler := authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -465,11 +469,7 @@ func parseMaxResults(raw string) int {
 }
 
 func allow(r *http.Request, deps common.Dependencies, action, resource string) bool {
-	subject, ok := httpx.SubjectFromContext(r.Context())
-	if !ok {
-		return false
-	}
-	return deps.Policy.Allowed(action, resource, subject.Policies)
+	return checkAuth(r)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

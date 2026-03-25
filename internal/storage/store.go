@@ -528,12 +528,28 @@ func (s *SQLiteStore) CreateSession(ctx context.Context, session core.Session) e
 func (s *SQLiteStore) GetSession(ctx context.Context, token string) (core.Session, []core.PolicyDocument, error) {
 	var session core.Session
 	var policiesJSON string
-	row := s.db.QueryRowContext(ctx, `
-		SELECT s.token, s.access_key_id, s.secret_key, s.principal_name, s.role_name, s.session_name, s.expires_at, s.created_at, r.policies_json
+	err := s.db.QueryRowContext(ctx, `
+		SELECT s.token, s.access_key_id, s.secret_key, s.principal_name, s.role_name, s.session_name, s.expires_at, s.created_at
 		FROM sessions s
-		JOIN roles r ON r.name = s.role_name
-		WHERE s.token = ?`, token)
-	if err := row.Scan(&session.Token, &session.AccessKeyID, &session.SecretKey, &session.PrincipalName, &session.RoleName, &session.SessionName, &session.ExpiresAt, &session.CreatedAt, &policiesJSON); err != nil {
+		WHERE s.token = ?`, token).Scan(&session.Token, &session.AccessKeyID, &session.SecretKey, &session.PrincipalName, &session.RoleName, &session.SessionName, &session.ExpiresAt, &session.CreatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return core.Session{}, nil, core.ErrNotFound
+		}
+		return core.Session{}, nil, err
+	}
+	if session.RoleName != "" {
+		// STS session: get policies from the role
+		err = s.db.QueryRowContext(ctx, `
+			SELECT r.policies_json FROM roles r
+			WHERE r.name = ?`, session.RoleName).Scan(&policiesJSON)
+	} else {
+		// GCS session: get policies from the principal directly
+		err = s.db.QueryRowContext(ctx, `
+			SELECT p.policies_json FROM principals p
+			WHERE p.name = ?`, session.PrincipalName).Scan(&policiesJSON)
+	}
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return core.Session{}, nil, core.ErrNotFound
 		}

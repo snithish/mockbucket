@@ -93,6 +93,36 @@ func (m SessionManager) AssumeRole(ctx context.Context, principalName, roleName,
 	return session, nil
 }
 
+func (m SessionManager) IssueTokenForPrincipal(ctx context.Context, principalName string) (core.Session, error) {
+	token, err := randomHex(16)
+	if err != nil {
+		return core.Session{}, err
+	}
+	accessKeyID, err := randomHex(8)
+	if err != nil {
+		return core.Session{}, err
+	}
+	secretKey, err := randomHex(16)
+	if err != nil {
+		return core.Session{}, err
+	}
+	now := time.Now().UTC()
+	session := core.Session{
+		Token:         token,
+		AccessKeyID:   accessKeyID,
+		SecretKey:     secretKey,
+		PrincipalName: principalName,
+		RoleName:      "", // No STS role for GCS
+		SessionName:   "", // No STS session for GCS
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(m.DefaultDuration),
+	}
+	if err := m.Store.CreateSession(ctx, session); err != nil {
+		return core.Session{}, err
+	}
+	return session, nil
+}
+
 func (m SessionManager) ResolveSession(ctx context.Context, token string) (core.Subject, error) {
 	session, policies, err := m.Store.GetSession(ctx, token)
 	if err != nil {
