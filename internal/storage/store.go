@@ -218,9 +218,8 @@ func (s *SQLiteStore) initSchema() error {
 			PRIMARY KEY (bucket, key)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_objects_bucket_key ON objects(bucket, key);`,
-		`CREATE TABLE IF NOT EXISTS principals (name TEXT PRIMARY KEY, policies_json TEXT NOT NULL, created_at TIMESTAMP NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS access_keys (id TEXT PRIMARY KEY, secret TEXT NOT NULL, allowed_roles_json TEXT NOT NULL DEFAULT '[]', principal_name TEXT NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL);`,
-		`CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, trust_json TEXT NOT NULL, policies_json TEXT NOT NULL, created_at TIMESTAMP NOT NULL);`,
+		`CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, created_at TIMESTAMP NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			token TEXT PRIMARY KEY,
 			access_key_id TEXT NOT NULL,
@@ -633,8 +632,8 @@ func upsertAccessKey(ctx context.Context, runner sqlRunner, key SeedAccessKey) e
 
 func upsertRole(ctx context.Context, runner sqlRunner, role core.Role) error {
 	_, err := runner.ExecContext(ctx, `
-		INSERT INTO roles(name, trust_json, policies_json, created_at) VALUES(?, '{}', '{}', ?)
-		ON CONFLICT(name) DO UPDATE SET trust_json = excluded.trust_json, policies_json = excluded.policies_json`,
+		INSERT INTO roles(name, created_at) VALUES(?, ?)
+		ON CONFLICT(name) DO NOTHING`,
 		role.Name, time.Now().UTC(),
 	)
 	return err

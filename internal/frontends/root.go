@@ -14,7 +14,7 @@ func registerAWSRoot(mux *http.ServeMux, cfg config.Config, deps common.Dependen
 		return
 	}
 	s3Root := s3.RootHandler(cfg, deps)
-	stsRoot := sts.RootHandler(cfg, deps)
+	stsRoot := sts.RootHandler(deps)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" && r.Method == http.MethodPost {
 			stsRoot.ServeHTTP(w, r)

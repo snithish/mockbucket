@@ -42,6 +42,32 @@ func TestRuntimeRejectsUnsupportedFrontends(t *testing.T) {
 	}
 }
 
+func TestParseServerAddress(t *testing.T) {
+	tests := []struct {
+		addr     string
+		wantHost string
+		wantPort int
+		wantErr  bool
+	}{
+		{addr: "127.0.0.1:9000", wantHost: "127.0.0.1", wantPort: 9000},
+		{addr: ":9000", wantHost: "127.0.0.1", wantPort: 9000},
+		{addr: "[::1]:9000", wantHost: "::1", wantPort: 9000},
+		{addr: "127.0.0.1", wantErr: true},
+	}
+	for _, tt := range tests {
+		host, port, err := parseServerAddress(tt.addr)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("parseServerAddress(%q) error = %v, wantErr = %v", tt.addr, err, tt.wantErr)
+		}
+		if tt.wantErr {
+			continue
+		}
+		if host != tt.wantHost || port != tt.wantPort {
+			t.Fatalf("parseServerAddress(%q) = (%q, %d), want (%q, %d)", tt.addr, host, port, tt.wantHost, tt.wantPort)
+		}
+	}
+}
+
 func newTestRuntime(t *testing.T, configure func(*mbconfig.Config)) *Runtime {
 	t.Helper()
 	cfg := baseConfig(t)

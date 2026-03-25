@@ -9,7 +9,6 @@ import (
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/frontends/gcs"
 	"github.com/snithish/mockbucket/internal/frontends/s3"
-	"github.com/snithish/mockbucket/internal/frontends/sts"
 	"github.com/snithish/mockbucket/internal/seed"
 )
 
@@ -26,7 +25,6 @@ func Validate(cfg config.Config) error {
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, gcsServiceAccounts []seed.ServiceAccountJSON) {
 	registerAWSRoot(mux, cfg, deps)
 	s3.Register(mux, cfg, deps)
-	sts.Register(mux, cfg, deps)
 	gcs.Register(mux, cfg, deps, gcsServiceAccounts)
 	azure.Register(mux, cfg)
 }

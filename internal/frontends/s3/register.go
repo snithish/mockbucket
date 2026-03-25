@@ -193,9 +193,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 
 	start, end, err := parseRange(rangeHeader, meta.Size)
 	if err != nil {
-		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, reader)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", meta.Size))
+		writeS3Error(w, http.StatusRequestedRangeNotSatisfiable, "InvalidRange", "The requested range is not satisfiable.")
 		return
 	}
 
@@ -245,8 +244,10 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		return
 	}
 	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
-		writeError(w, err)
-		return
+		if err != core.ErrNotFound {
+			writeError(w, err)
+			return
+		}
 	}
 	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
 		writeError(w, err)
@@ -573,11 +574,45 @@ func writeXML(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	if err == core.ErrConflict {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
+	status, code, message := s3ErrorDetails(err)
+	writeS3Error(w, status, code, message)
+}
+
+func writeS3Error(w http.ResponseWriter, status int, code, message string) {
+	payload := struct {
+		XMLName   xml.Name `xml:"Error"`
+		Code      string   `xml:"Code"`
+		Message   string   `xml:"Message"`
+		RequestID string   `xml:"RequestId"`
+	}{
+		Code:      code,
+		Message:   message,
+		RequestID: "mockbucket",
 	}
-	http.Error(w, err.Error(), httpx.StatusCode(err))
+	writeXML(w, status, payload)
+}
+
+func s3ErrorDetails(err error) (int, string, string) {
+	switch {
+	case err == nil:
+		return http.StatusOK, "", ""
+	case err == core.ErrConflict:
+		return http.StatusConflict, "Conflict", err.Error()
+	case err == core.ErrNotFound:
+		return http.StatusNotFound, "NoSuchKey", "The specified key does not exist."
+	case err == core.ErrInvalidArgument:
+		return http.StatusBadRequest, "InvalidArgument", err.Error()
+	case err == core.ErrAccessDenied:
+		return http.StatusForbidden, "AccessDenied", "Access Denied"
+	case err == core.ErrUnauthenticated:
+		return http.StatusUnauthorized, "AccessDenied", "Access Denied"
+	case err == core.ErrExpiredToken:
+		return http.StatusUnauthorized, "ExpiredToken", "The provided token has expired."
+	case err == core.ErrUnsupported:
+		return http.StatusNotImplemented, "NotImplemented", err.Error()
+	default:
+		return httpx.StatusCode(err), "InternalError", err.Error()
+	}
 }
 
 func parseMaxKeys(r *http.Request) (int, error) {

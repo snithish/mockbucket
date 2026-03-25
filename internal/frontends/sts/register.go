@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/httpx"
@@ -14,9 +13,7 @@ import (
 
 const xmlNamespace = "https://sts.amazonaws.com/doc/2011-06-15/"
 
-func Register(_ *http.ServeMux, _ config.Config, _ common.Dependencies) {}
-
-func RootHandler(_ config.Config, deps common.Dependencies) http.Handler {
+func RootHandler(deps common.Dependencies) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleAssumeRole(w, r, deps)
 	})

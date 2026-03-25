@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -21,7 +22,7 @@ type ServiceAccountJSON struct {
 	ProjectID   string `json:"project_id"`
 }
 
-func GenerateServiceAccountJSON(host string, port int, principalName string) (ServiceAccountJSON, error) {
+func GenerateServiceAccountJSON(host string, port int, clientEmail string) (ServiceAccountJSON, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return ServiceAccountJSON{}, fmt.Errorf("generate rsa key: %w", err)
@@ -33,7 +34,10 @@ func GenerateServiceAccountJSON(host string, port int, principalName string) (Se
 	})
 
 	clientID := generateClientID()
-	clientEmail := fmt.Sprintf("%s@mockbucket.iam.gserviceaccount.com", principalName)
+	clientEmail = strings.TrimSpace(clientEmail)
+	if clientEmail == "" {
+		return ServiceAccountJSON{}, fmt.Errorf("client email is required")
+	}
 
 	tokenURI := fmt.Sprintf("http://%s:%d/oauth2/v4/token", host, port)
 
@@ -47,10 +51,10 @@ func GenerateServiceAccountJSON(host string, port int, principalName string) (Se
 	}, nil
 }
 
-func GenerateServiceAccounts(host string, port int, principals []string) ([]ServiceAccountJSON, error) {
+func GenerateServiceAccounts(host string, port int, clientEmails []string) ([]ServiceAccountJSON, error) {
 	var accounts []ServiceAccountJSON
-	for _, principal := range principals {
-		acc, err := GenerateServiceAccountJSON(host, port, principal)
+	for _, clientEmail := range clientEmails {
+		acc, err := GenerateServiceAccountJSON(host, port, clientEmail)
 		if err != nil {
 			return nil, err
 		}

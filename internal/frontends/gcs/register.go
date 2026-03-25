@@ -235,11 +235,27 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 	}
 	prefix := r.URL.Query().Get("prefix")
 	pageToken := r.URL.Query().Get("pageToken")
+	startOffset := r.URL.Query().Get("startOffset")
 	maxResults := parseMaxResults(r.URL.Query().Get("maxResults"))
-	objects, err := deps.Metadata.ListObjects(r.Context(), bucket, prefix, maxResults, pageToken)
+	after := startOffset
+	if pageToken != "" {
+		var err error
+		after, err = decodePageToken(pageToken)
+		if err != nil {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+	}
+	fetchLimit := maxResults + 1
+	objects, err := deps.Metadata.ListObjects(r.Context(), bucket, prefix, fetchLimit, after)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	isTruncated := false
+	if len(objects) > maxResults {
+		isTruncated = true
+		objects = objects[:maxResults]
 	}
 	resp := listObjectsResponse{Kind: "storage#objects"}
 	for _, obj := range objects {
@@ -253,8 +269,8 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 			Updated:     obj.ModifiedAt.UTC().Format(time.RFC3339),
 		})
 	}
-	if len(objects) == maxResults && len(objects) > 0 {
-		resp.NextPageToken = objects[len(objects)-1].Key
+	if isTruncated && len(objects) > 0 {
+		resp.NextPageToken = encodePageToken(objects[len(objects)-1].Key)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -466,6 +482,18 @@ func parseMaxResults(raw string) int {
 		return 1000
 	}
 	return value
+}
+
+func encodePageToken(lastKey string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(lastKey))
+}
+
+func decodePageToken(token string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func allow(r *http.Request, deps common.Dependencies, action, resource string) bool {

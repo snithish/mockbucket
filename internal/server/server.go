@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/snithish/mockbucket/internal/config"
@@ -237,19 +239,16 @@ func convertGCSConfigTokens(tokens []config.GCSToken) []seed.GCSTokenSeed {
 }
 
 func parseServerAddress(addr string) (string, int, error) {
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			host := addr[:i]
-			port := addr[i+1:]
-			var portNum int
-			if _, err := fmt.Sscanf(port, "%d", &portNum); err != nil {
-				return "", 0, fmt.Errorf("invalid port: %w", err)
-			}
-			if host == "" {
-				host = "127.0.0.1"
-			}
-			return host, portNum, nil
-		}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid address %q: %w", addr, err)
 	}
-	return "", 0, fmt.Errorf("invalid address: %s", addr)
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid port: %w", err)
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return host, portNum, nil
 }

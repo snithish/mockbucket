@@ -3,10 +3,7 @@ package seed
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 type Document struct {
@@ -50,24 +47,6 @@ type GCSTokenSeed struct {
 type GCSServiceCredSeed struct {
 	ClientEmail string `yaml:"client_email"`
 	Principal   string `yaml:"principal"`
-}
-
-func Load(path string) (Document, error) {
-	if strings.TrimSpace(path) == "" {
-		return Document{}, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return Document{}, fmt.Errorf("read seed: %w", err)
-	}
-	var doc Document
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return Document{}, fmt.Errorf("parse seed: %w", err)
-	}
-	if err := doc.Validate(); err != nil {
-		return Document{}, err
-	}
-	return doc, nil
 }
 
 func (d Document) Validate() error {

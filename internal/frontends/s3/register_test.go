@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,11 +62,73 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 
 	handleDeleteObject(rec, req, deps, "demo", "file.txt")
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", rec.Code)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if _, _, err := objects.OpenObject(context.Background(), "demo", "file.txt"); err != nil {
-		t.Fatalf("expected object to remain, got %v", err)
+	if _, _, err := objects.OpenObject(context.Background(), "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("expected object to be deleted, got %v", err)
+	}
+}
+
+func TestGetObjectInvalidRangeReturns416(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	meta, err := objects.PutObject(ctx, "demo", "file.txt", bytes.NewBufferString("hello"))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, meta); err != nil {
+		t.Fatalf("PutObject(metadata) error = %v", err)
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+
+	req := httptest.NewRequest(http.MethodGet, "/demo/file.txt", nil)
+	req.Header.Set("Range", "bytes=100-200")
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "file.txt")
+	rec := httptest.NewRecorder()
+
+	handleGetObject(rec, req, deps, "demo", "file.txt")
+
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("status = %d, want 416", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Range"); got != "bytes */5" {
+		t.Fatalf("Content-Range = %q, want %q", got, "bytes */5")
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>InvalidRange</Code>") {
+		t.Fatalf("expected InvalidRange XML error, got %q", rec.Body.String())
+	}
+}
+
+func TestWriteErrorUsesS3XMLEnvelope(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, core.ErrInvalidArgument)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/xml" {
+		t.Fatalf("Content-Type = %q, want %q", got, "application/xml")
+	}
+	body, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !strings.Contains(string(body), "<Error>") || !strings.Contains(string(body), "<Code>InvalidArgument</Code>") {
+		t.Fatalf("unexpected XML error body: %q", string(body))
 	}
 }
 

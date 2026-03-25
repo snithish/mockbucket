@@ -143,6 +143,57 @@ func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
 	}
 }
 
+func TestGCSListObjectsUsesStartOffsetAndOpaqueToken(t *testing.T) {
+	client := newGCSContractClient(t).(*gcsContractClient)
+	ctx := context.Background()
+	for _, key := range []string{
+		"logs/2024-01.txt",
+		"logs/2024-02.txt",
+		"logs/2024-03.txt",
+		"logs/2024-04.txt",
+	} {
+		if _, err := client.PutObject(ctx, "demo", key, "x"); err != nil {
+			t.Fatalf("PutObject(%s) error = %v", key, err)
+		}
+	}
+
+	first, err := client.ListObjects(ctx, "demo", "logs/", 2, "", "")
+	if err != nil {
+		t.Fatalf("ListObjects(first) error = %v", err)
+	}
+	if len(first.Keys) != 2 {
+		t.Fatalf("first page keys = %d, want 2", len(first.Keys))
+	}
+	if first.NextToken == "" {
+		t.Fatal("first page missing next token")
+	}
+	if first.NextToken == first.Keys[len(first.Keys)-1] {
+		t.Fatalf("expected opaque page token, got raw key token %q", first.NextToken)
+	}
+
+	second, err := client.ListObjects(ctx, "demo", "logs/", 2, first.NextToken, "")
+	if err != nil {
+		t.Fatalf("ListObjects(second) error = %v", err)
+	}
+	if len(second.Keys) != 2 {
+		t.Fatalf("second page keys = %d, want 2", len(second.Keys))
+	}
+	if second.Keys[0] != "logs/2024-03.txt" {
+		t.Fatalf("second page first key = %q, want logs/2024-03.txt", second.Keys[0])
+	}
+
+	offset, err := client.ListObjects(ctx, "demo", "logs/", 1000, "", "logs/2024-02.txt")
+	if err != nil {
+		t.Fatalf("ListObjects(startOffset) error = %v", err)
+	}
+	if len(offset.Keys) != 2 {
+		t.Fatalf("startOffset keys = %d, want 2", len(offset.Keys))
+	}
+	if offset.Keys[0] != "logs/2024-03.txt" {
+		t.Fatalf("startOffset first key = %q, want logs/2024-03.txt", offset.Keys[0])
+	}
+}
+
 type gcsContractClient struct {
 	client    *storage.Client
 	endpoint  string
@@ -280,9 +331,6 @@ func (c *gcsContractClient) ListObjects(ctx context.Context, bucket, prefix stri
 	}
 	keys := make([]string, 0, len(payload.Items))
 	for _, item := range payload.Items {
-		if startAfter != "" && item.Name <= startAfter {
-			continue
-		}
 		keys = append(keys, item.Name)
 	}
 	return contractListResult{Keys: keys, NextToken: payload.NextPageToken, Truncated: payload.NextPageToken != ""}, nil
