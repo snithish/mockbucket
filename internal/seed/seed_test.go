@@ -12,13 +12,24 @@ import (
 
 func TestValidateRejectsUnknownReferences(t *testing.T) {
 	doc := Document{
-		Buckets:    []string{"demo"},
-		Principals: []core.Principal{{Name: "admin"}},
-		Roles:      []core.Role{{Name: "reader"}},
-		Objects:    []ObjectSeed{{Bucket: "missing", Key: "object.txt", Content: "x"}},
+		Buckets: []string{"demo"},
+		Roles:   []RoleSeed{{Name: "reader"}},
+		Objects: []ObjectSeed{{Bucket: "missing", Key: "object.txt", Content: "x"}},
 	}
 	if err := doc.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want error")
+	}
+}
+
+func TestValidateAllowedRolesReferenceUnknownRole(t *testing.T) {
+	doc := Document{
+		Roles: []RoleSeed{{Name: "reader"}},
+		S3: S3SeedConfig{
+			AccessKeys: []S3AccessKeySeed{{ID: "k", Secret: "s", AllowedRoles: []string{"nonexistent"}}},
+		},
+	}
+	if err := doc.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want error for unknown role in allowed_roles")
 	}
 }
 
@@ -37,10 +48,9 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 	failingObjects := &failingObjectStore{ObjectStore: objects, failAfter: 1}
 
 	doc := Document{
-		Buckets:    []string{"demo"},
-		Principals: []core.Principal{{Name: "admin"}},
-		S3:         S3SeedConfig{AccessKeys: []S3AccessKeySeed{{ID: "admin", Secret: "secret", Principal: "admin"}}},
-		Roles:      []core.Role{{Name: "reader"}},
+		Buckets: []string{"demo"},
+		Roles:   []RoleSeed{{Name: "reader"}},
+		S3:      S3SeedConfig{AccessKeys: []S3AccessKeySeed{{ID: "admin", Secret: "secret"}}},
 		Objects: []ObjectSeed{
 			{Bucket: "demo", Key: "a.txt", Content: "a"},
 			{Bucket: "demo", Key: "b.txt", Content: "b"},
@@ -57,13 +67,6 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 	}
 	if len(buckets) != 0 {
 		t.Fatalf("expected zero buckets after rollback, got %d", len(buckets))
-	}
-	principals, err := metadata.ListPrincipals(ctx)
-	if err != nil {
-		t.Fatalf("ListPrincipals() error = %v", err)
-	}
-	if len(principals) != 0 {
-		t.Fatalf("expected zero principals after rollback, got %d", len(principals))
 	}
 	roles, err := metadata.ListRoles(ctx)
 	if err != nil {
@@ -97,28 +100,17 @@ func TestApplyReconcilesIdentityState(t *testing.T) {
 		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
 	}
 
-	if err := metadata.UpsertPrincipal(ctx, core.Principal{Name: "old"}); err != nil {
-		t.Fatalf("UpsertPrincipal() error = %v", err)
-	}
 	if err := metadata.UpsertRole(ctx, core.Role{Name: "old-role"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
 
 	doc := Document{
-		Principals: []core.Principal{{Name: "admin"}},
-		S3:         S3SeedConfig{AccessKeys: []S3AccessKeySeed{{ID: "admin", Secret: "admin-secret", Principal: "admin"}}},
-		Roles:      []core.Role{{Name: "reader"}},
+		Roles: []RoleSeed{{Name: "reader"}},
+		S3:    S3SeedConfig{AccessKeys: []S3AccessKeySeed{{ID: "admin", Secret: "admin-secret", AllowedRoles: []string{"reader"}}}},
 	}
 
 	if err := Apply(ctx, doc, metadata, objects); err != nil {
 		t.Fatalf("Apply() error = %v", err)
-	}
-	principals, err := metadata.ListPrincipals(ctx)
-	if err != nil {
-		t.Fatalf("ListPrincipals() error = %v", err)
-	}
-	if len(principals) != 1 || principals[0] != "admin" {
-		t.Fatalf("expected only admin principal, got %v", principals)
 	}
 	roles, err := metadata.ListRoles(ctx)
 	if err != nil {
@@ -133,6 +125,9 @@ func TestApplyReconcilesIdentityState(t *testing.T) {
 	}
 	if len(keys) != 1 || keys[0].ID != "admin" {
 		t.Fatalf("expected only admin key, got %v", keys)
+	}
+	if len(keys[0].AllowedRoles) != 1 || keys[0].AllowedRoles[0] != "reader" {
+		t.Fatalf("expected allowed_roles=[reader], got %v", keys[0].AllowedRoles)
 	}
 }
 

@@ -12,23 +12,25 @@ frontends:
 # Supported profiles:
 # - S3 (with STS): s3: true, gcs: false
 # - GCS only: s3: false, gcs: true
-# - GCS auth: use gcs.tokens for hardcoded bearer tokens
-#   OR auto-generated JWT: fetch GET /api/v1/gcs/service-account
 auth:
   session_duration: 1h
 seed:
   buckets:
     - demo
-  principals:
-    - name: admin
   roles:
     - name: data-reader
   s3:
     access_keys:
       - id: admin
         secret: admin-secret
-        principal: admin
+      - id: restricted
+        secret: restricted-secret
+        allowed_roles:
+          - data-reader
   gcs:
+    service_credentials:
+      - client_email: admin@mockbucket.iam.gserviceaccount.com
+        principal: admin
     tokens:
       - token: "hardcoded-token-123"
         principal: admin

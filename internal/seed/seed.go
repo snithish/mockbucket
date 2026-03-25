@@ -7,17 +7,18 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/snithish/mockbucket/internal/core"
 )
 
 type Document struct {
-	Buckets    []string         `yaml:"buckets"`
-	Principals []core.Principal `yaml:"principals"`
-	Roles      []core.Role      `yaml:"roles"`
-	Objects    []ObjectSeed     `yaml:"objects"`
-	S3         S3SeedConfig     `yaml:"s3"`
-	GCS        GCSSeedConfig    `yaml:"gcs"`
+	Buckets []string      `yaml:"buckets"`
+	Roles   []RoleSeed    `yaml:"roles"`
+	Objects []ObjectSeed  `yaml:"objects"`
+	S3      S3SeedConfig  `yaml:"s3"`
+	GCS     GCSSeedConfig `yaml:"gcs"`
+}
+
+type RoleSeed struct {
+	Name string `yaml:"name"`
 }
 
 type ObjectSeed struct {
@@ -31,18 +32,24 @@ type S3SeedConfig struct {
 }
 
 type S3AccessKeySeed struct {
-	ID        string `yaml:"id"`
-	Secret    string `yaml:"secret"`
-	Principal string `yaml:"principal"`
+	ID           string   `yaml:"id"`
+	Secret       string   `yaml:"secret"`
+	AllowedRoles []string `yaml:"allowed_roles"`
 }
 
 type GCSSeedConfig struct {
-	Tokens []GCSTokenSeed `yaml:"tokens"`
+	Tokens             []GCSTokenSeed       `yaml:"tokens"`
+	ServiceCredentials []GCSServiceCredSeed `yaml:"service_credentials"`
 }
 
 type GCSTokenSeed struct {
 	Token     string `yaml:"token"`
 	Principal string `yaml:"principal"`
+}
+
+type GCSServiceCredSeed struct {
+	ClientEmail string `yaml:"client_email"`
+	Principal   string `yaml:"principal"`
 }
 
 func Load(path string) (Document, error) {
@@ -66,7 +73,8 @@ func Load(path string) (Document, error) {
 func (d Document) Validate() error {
 	var problems []string
 	bucketSet := map[string]struct{}{}
-	principalSet := map[string]struct{}{}
+	roleSet := map[string]struct{}{}
+
 	for i, bucket := range d.Buckets {
 		if strings.TrimSpace(bucket) == "" {
 			problems = append(problems, fmt.Sprintf("buckets[%d] is required", i))
@@ -74,18 +82,12 @@ func (d Document) Validate() error {
 		}
 		bucketSet[bucket] = struct{}{}
 	}
-	for i, principal := range d.Principals {
-		if strings.TrimSpace(principal.Name) == "" {
-			problems = append(problems, fmt.Sprintf("principals[%d].name is required", i))
-			continue
-		}
-		principalSet[principal.Name] = struct{}{}
-	}
 	for i, role := range d.Roles {
 		if strings.TrimSpace(role.Name) == "" {
 			problems = append(problems, fmt.Sprintf("roles[%d].name is required", i))
 			continue
 		}
+		roleSet[role.Name] = struct{}{}
 	}
 	for i, object := range d.Objects {
 		if _, ok := bucketSet[object.Bucket]; !ok {
@@ -103,10 +105,10 @@ func (d Document) Validate() error {
 		if strings.TrimSpace(key.Secret) == "" {
 			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].secret is required", i))
 		}
-		if strings.TrimSpace(key.Principal) == "" {
-			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].principal is required", i))
-		} else if _, ok := principalSet[key.Principal]; !ok {
-			problems = append(problems, fmt.Sprintf("s3.access_keys[%d].principal references unknown principal %q", i, key.Principal))
+		for j, role := range key.AllowedRoles {
+			if _, ok := roleSet[role]; !ok {
+				problems = append(problems, fmt.Sprintf("s3.access_keys[%d].allowed_roles[%d] references unknown role %q", i, j, role))
+			}
 		}
 		if strings.TrimSpace(key.ID) != "" {
 			if _, ok := keySet[key.ID]; ok {
@@ -122,13 +124,25 @@ func (d Document) Validate() error {
 		}
 		if strings.TrimSpace(t.Principal) == "" {
 			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].principal is required", i))
-		} else if _, ok := principalSet[t.Principal]; !ok {
-			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].principal references unknown principal %q", i, t.Principal))
 		}
 		if _, ok := tokenSet[t.Token]; ok {
 			problems = append(problems, fmt.Sprintf("gcs.tokens[%d].token %q is not unique", i, t.Token))
 		} else {
 			tokenSet[t.Token] = struct{}{}
+		}
+	}
+	emailSet := map[string]struct{}{}
+	for i, sc := range d.GCS.ServiceCredentials {
+		if strings.TrimSpace(sc.ClientEmail) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.service_credentials[%d].client_email is required", i))
+		}
+		if strings.TrimSpace(sc.Principal) == "" {
+			problems = append(problems, fmt.Sprintf("gcs.service_credentials[%d].principal is required", i))
+		}
+		if _, ok := emailSet[sc.ClientEmail]; ok {
+			problems = append(problems, fmt.Sprintf("gcs.service_credentials[%d].client_email %q is not unique", i, sc.ClientEmail))
+		} else {
+			emailSet[sc.ClientEmail] = struct{}{}
 		}
 	}
 	if len(problems) > 0 {

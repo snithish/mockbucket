@@ -57,15 +57,16 @@ ENDPOINT = f"http://127.0.0.1:{PORT}"
 _DEFAULT_SEED = """\
 buckets:
   - demo
-principals:
-  - name: admin
 roles:
   - name: data-reader
 s3:
   access_keys:
     - id: admin
       secret: admin-secret
-      principal: admin
+    - id: restricted
+      secret: restricted-secret
+      allowed_roles:
+        - data-reader
 objects:
   - bucket: demo
     key: bootstrap/hello.txt

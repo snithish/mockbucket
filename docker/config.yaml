@@ -14,15 +14,12 @@ auth:
 seed:
   buckets:
     - demo
-  principals:
-    - name: admin
   roles:
     - name: data-reader
   s3:
     access_keys:
       - id: admin
         secret: admin-secret
-        principal: admin
   objects:
     - bucket: demo
       key: bootstrap/hello.txt

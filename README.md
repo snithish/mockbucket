@@ -28,9 +28,9 @@ MockBucket persists object bytes on the filesystem, stores metadata in SQLite, a
   - [Auth](#auth)
 - [Seeding State](#seeding-state)
   - [Buckets](#buckets)
-  - [Principals](#principals)
   - [Access Keys](#access-keys)
   - [Roles](#roles)
+  - [GCS Service Credentials](#gcs-service-credentials)
   - [Objects](#objects)
 - [Usage Examples](#usage-examples)
   - [AWS CLI](#aws-cli)
@@ -187,13 +187,16 @@ Seed data is defined inline under the `seed:` key. See `mockbucket.example.yaml`
 seed:
   buckets:
     - my-bucket
-  principals:
-    - name: admin
+  roles:
+    - name: data-reader
   s3:
     access_keys:
       - id: admin
         secret: admin-secret
-        principal: admin
+      - id: restricted
+        secret: restricted-secret
+        allowed_roles:
+          - data-reader
 ```
 
 ### Frontends
@@ -227,9 +230,9 @@ MockBucket is intentionally **authless**. This is the right trade-off for a loca
 
 - **No SigV4 verification.** S3 and STS requests are accepted regardless of the access key ID, secret key, or signature. Any AWS SDK client works because the server does not check credentials.
 - **No IAM policy evaluation.** Seed data supports `principals`, `roles`, and `policies`, but no access control is enforced. Every operation is allowed.
-- **No trust policy checks on AssumeRole.** STS `AssumeRole` succeeds for any role that exists in the seed, regardless of who calls it.
+- **No trust policy checks on AssumeRole.** STS `AssumeRole` succeeds for any role that exists in the seed. You can restrict which roles each access key can assume via `allowed_roles`.
 - **STS auto-enables with S3.** There is no `frontends.sts` config flag. When `s3: true`, STS is always available.
-- **Seed data is structural, not authoritative.** Principals and roles in seed YAML define entities for GCS service accounts and seed consistency. Policies, trust statements, and access control have been removed entirely.
+- **No top-level principals.** Identity is scoped per-provider: S3 access keys carry `allowed_roles`, GCS service credentials carry `client_email`/`principal`.
 
 If you need real auth or IAM enforcement for testing, use a different tool or a real AWS sandbox. MockBucket's value is fast, deterministic, wire-compatible S3/STS/GCS — not security simulation.
 
@@ -247,38 +250,45 @@ buckets:
   - logs-bucket
 ```
 
-### Principals
-
-Principals are used by GCS for service account generation. They are optional for S3/STS mode:
-
-```yaml
-principals:
-  - name: admin
-  - name: reader
-```
-
 ### Access Keys
 
-Define S3 access keys under `s3.access_keys`, referencing a principal. These are used by the AWS SDK to construct requests (the server does not verify them):
+Define S3 access keys under `s3.access_keys`. Any key works because the server does not verify signatures. Set `allowed_roles` to restrict which roles the key can assume via STS — omit it to allow any role:
 
 ```yaml
 s3:
   access_keys:
     - id: admin
       secret: admin-secret
-      principal: admin
     - id: reader-key
       secret: reader-secret
-      principal: reader
+      allowed_roles:
+        - data-reader
 ```
 
 ### Roles
 
-Define named roles for `sts:AssumeRole`. The role must exist, but anyone can assume it — no trust or policy evaluation:
+Define named roles for `sts:AssumeRole`. The role must exist in seed data:
 
 ```yaml
 roles:
   - name: data-reader
+  - name: data-writer
+```
+
+### GCS Service Credentials
+
+For GCS, define `service_credentials` to auto-generate service account JSON for JWT authentication. Each entry maps a `client_email` to a `principal`:
+
+```yaml
+gcs:
+  service_credentials:
+    - client_email: admin@mockbucket.iam.gserviceaccount.com
+      principal: admin
+    - client_email: reader@mockbucket.iam.gserviceaccount.com
+      principal: reader
+  tokens:
+    - token: "hardcoded-token-123"
+      principal: admin
 ```
 
 ### Objects
@@ -362,13 +372,13 @@ for item in response.get("Contents", []):
 
 ### STS AssumeRole
 
-STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data:
+STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data. Use `allowed_roles` on access keys to restrict which roles each key can assume:
 
 ```sh
 export AWS_ACCESS_KEY_ID=admin
 export AWS_SECRET_ACCESS_KEY=admin-secret
 
-# Assume a role (no permission check — any caller can assume any role)
+# Assume a role (any key can assume any role if allowed_roles is empty)
 CREDENTIALS=$(aws --endpoint-url http://localhost:9000 sts assume-role \
     --role-arn arn:mockbucket:iam::role/data-reader \
     --role-session-name test-session)
@@ -382,6 +392,8 @@ export AWS_SESSION_TOKEN=$(echo $CREDENTIALS | jq -r '.Credentials.SessionToken'
 aws --endpoint-url http://localhost:9000 s3api get-object \
     --bucket demo --key bootstrap/hello.txt /tmp/assumed.txt
 ```
+
+If an access key has `allowed_roles: ["data-reader"]`, attempting to assume any other role returns `AccessDenied`.
 
 ## Verifying Releases
 

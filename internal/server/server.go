@@ -62,15 +62,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		if err != nil {
 			return nil, fmt.Errorf("parse server address: %w", err)
 		}
-		for _, principal := range cfg.Seed.Principals {
-			sa, err := seed.GenerateServiceAccountJSON(host, port, principal.Name)
+		for _, sc := range cfg.Seed.GCS.ServiceCredentials {
+			sa, err := seed.GenerateServiceAccountJSON(host, port, sc.ClientEmail)
 			if err != nil {
-				return nil, fmt.Errorf("generate service account for %s: %w", principal.Name, err)
+				return nil, fmt.Errorf("generate service account for %s: %w", sc.ClientEmail, err)
 			}
 			gcsServiceAccounts = append(gcsServiceAccounts, sa)
 			if err := metadata.UpsertServiceAccount(ctx, core.ServiceAccount{
 				ClientEmail: sa.ClientEmail,
-				Principal:   principal.Name,
+				Principal:   sc.Principal,
 				Token:       fmt.Sprintf("jwt:%s", sa.ClientEmail),
 			}); err != nil {
 				return nil, fmt.Errorf("store service account: %w", err)
@@ -188,16 +188,19 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 
 func seedDocument(s config.SeedData) seed.Document {
 	doc := seed.Document{
-		Buckets:    append([]string(nil), s.Buckets...),
-		Principals: append([]core.Principal(nil), s.Principals...),
-		Roles:      append([]core.Role(nil), s.Roles...),
-		Objects:    make([]seed.ObjectSeed, 0, len(s.Objects)),
+		Buckets: append([]string(nil), s.Buckets...),
+		Roles:   make([]seed.RoleSeed, 0, len(s.Roles)),
+		Objects: make([]seed.ObjectSeed, 0, len(s.Objects)),
 		S3: seed.S3SeedConfig{
 			AccessKeys: make([]seed.S3AccessKeySeed, 0, len(s.S3.AccessKeys)),
 		},
 		GCS: seed.GCSSeedConfig{
-			Tokens: convertGCSConfigTokens(s.GCS.Tokens),
+			Tokens:             convertGCSConfigTokens(s.GCS.Tokens),
+			ServiceCredentials: make([]seed.GCSServiceCredSeed, 0, len(s.GCS.ServiceCredentials)),
 		},
+	}
+	for _, r := range s.Roles {
+		doc.Roles = append(doc.Roles, seed.RoleSeed{Name: r.Name})
 	}
 	for _, o := range s.Objects {
 		doc.Objects = append(doc.Objects, seed.ObjectSeed{
@@ -208,9 +211,15 @@ func seedDocument(s config.SeedData) seed.Document {
 	}
 	for _, k := range s.S3.AccessKeys {
 		doc.S3.AccessKeys = append(doc.S3.AccessKeys, seed.S3AccessKeySeed{
-			ID:        k.ID,
-			Secret:    k.Secret,
-			Principal: k.Principal,
+			ID:           k.ID,
+			Secret:       k.Secret,
+			AllowedRoles: k.AllowedRoles,
+		})
+	}
+	for _, sc := range s.GCS.ServiceCredentials {
+		doc.GCS.ServiceCredentials = append(doc.GCS.ServiceCredentials, seed.GCSServiceCredSeed{
+			ClientEmail: sc.ClientEmail,
+			Principal:   sc.Principal,
 		})
 	}
 	return doc

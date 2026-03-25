@@ -83,6 +83,31 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAccessKeyAllowedRoles(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	state := SeedState{
+		Roles:      []core.Role{{Name: "reader"}, {Name: "writer"}},
+		AccessKeys: []SeedAccessKey{{ID: "k1", Secret: "s1", AllowedRoles: []string{"reader"}}},
+	}
+	if err := metadata.ApplySeedState(ctx, state, &noopObjectStore{}); err != nil {
+		t.Fatalf("ApplySeedState() error = %v", err)
+	}
+
+	key, err := metadata.FindAccessKey(ctx, "k1")
+	if err != nil {
+		t.Fatalf("FindAccessKey() error = %v", err)
+	}
+	if len(key.AllowedRoles) != 1 || key.AllowedRoles[0] != "reader" {
+		t.Fatalf("allowed_roles = %v, want [reader]", key.AllowedRoles)
+	}
+}
+
 func TestMultipartUploadLifecycle(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -185,3 +210,20 @@ func TestListObjectsUsesLiteralPrefix(t *testing.T) {
 		t.Fatalf("expected literal prefix match, got %+v", items)
 	}
 }
+
+type noopObjectStore struct{}
+
+func (noopObjectStore) PutObject(context.Context, string, string, ObjectSource) (core.ObjectMetadata, error) {
+	return core.ObjectMetadata{}, nil
+}
+func (noopObjectStore) OpenObject(context.Context, string, string) (ObjectReader, core.ObjectMetadata, error) {
+	return nil, core.ObjectMetadata{}, core.ErrNotFound
+}
+func (noopObjectStore) DeleteObject(context.Context, string, string) error { return nil }
+func (noopObjectStore) PutMultipartPart(context.Context, string, int, ObjectSource) (core.MultipartPart, error) {
+	return core.MultipartPart{}, nil
+}
+func (noopObjectStore) CompleteMultipartUpload(context.Context, string, string, []core.MultipartPart) (core.ObjectMetadata, error) {
+	return core.ObjectMetadata{}, nil
+}
+func (noopObjectStore) AbortMultipartUpload(context.Context, string) error { return nil }

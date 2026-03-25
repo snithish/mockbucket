@@ -14,19 +14,16 @@ from google.auth import credentials
 SEED = """\
 buckets:
   - compat-demo
-principals:
-  - name: gcs-admin
-    policies:
-      - statements:
-          - effect: Allow
-            actions: ["*"]
-            resources: ["*"]
+gcs:
+  service_credentials:
+    - client_email: gcs-admin@mockbucket.iam.gserviceaccount.com
+      principal: gcs-admin
 """
 
 
 def configure() -> dict:
     """Return config overrides for the GCS frontend."""
-    return {"s3": False, "sts": False, "gcs": True}
+    return {"s3": False, "gcs": True}
 
 
 def seed() -> str:

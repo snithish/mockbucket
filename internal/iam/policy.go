@@ -16,15 +16,30 @@ type SessionManager struct {
 	DefaultDuration time.Duration
 }
 
-func (m SessionManager) AssumeRole(ctx context.Context, roleName, sessionName string) (core.Session, error) {
+func (m SessionManager) AssumeRole(ctx context.Context, roleName, sessionName, accessKeyID string) (core.Session, error) {
 	if _, err := m.Store.GetRole(ctx, roleName); err != nil {
 		return core.Session{}, err
+	}
+	if accessKeyID != "" {
+		key, err := m.Store.FindAccessKey(ctx, accessKeyID)
+		if err == nil && len(key.AllowedRoles) > 0 {
+			allowed := false
+			for _, r := range key.AllowedRoles {
+				if r == roleName {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return core.Session{}, core.ErrAccessDenied
+			}
+		}
 	}
 	token, err := randomHex(16)
 	if err != nil {
 		return core.Session{}, err
 	}
-	accessKeyID, err := randomHex(8)
+	accessKey, err := randomHex(8)
 	if err != nil {
 		return core.Session{}, err
 	}
@@ -35,7 +50,7 @@ func (m SessionManager) AssumeRole(ctx context.Context, roleName, sessionName st
 	now := time.Now().UTC()
 	session := core.Session{
 		Token:       token,
-		AccessKeyID: accessKeyID,
+		AccessKeyID: accessKey,
 		SecretKey:   secretKey,
 		RoleName:    roleName,
 		SessionName: sessionName,
@@ -67,8 +82,6 @@ func (m SessionManager) IssueTokenForPrincipal(ctx context.Context, principalNam
 		AccessKeyID:   accessKeyID,
 		SecretKey:     secretKey,
 		PrincipalName: principalName,
-		RoleName:      "",
-		SessionName:   "",
 		CreatedAt:     now,
 		ExpiresAt:     now.Add(m.DefaultDuration),
 	}
@@ -95,11 +108,11 @@ type Resolver struct {
 }
 
 func (r Resolver) ResolveAccessKey(ctx context.Context, accessKeyID string) (core.Subject, error) {
-	key, err := r.Store.FindAccessKey(ctx, accessKeyID)
+	_, err := r.Store.FindAccessKey(ctx, accessKeyID)
 	if err != nil {
 		return core.Subject{}, err
 	}
-	return core.Subject{PrincipalName: key.PrincipalName}, nil
+	return core.Subject{PrincipalName: accessKeyID}, nil
 }
 
 func (r Resolver) ResolveBearerToken(ctx context.Context, token string) (core.Subject, error) {

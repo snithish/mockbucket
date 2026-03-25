@@ -149,8 +149,7 @@ func (m *failingMetadataStore) DeleteObject(context.Context, string, string) err
 func (m *failingMetadataStore) ListObjects(context.Context, string, string, int, string) ([]core.ObjectMetadata, error) {
 	return nil, nil
 }
-func (m *failingMetadataStore) UpsertPrincipal(context.Context, core.Principal) error { return nil }
-func (m *failingMetadataStore) UpsertRole(context.Context, core.Role) error           { return nil }
+func (m *failingMetadataStore) UpsertRole(context.Context, core.Role) error { return nil }
 func (m *failingMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
 	return core.AccessKey{}, core.ErrNotFound
 }
@@ -218,8 +217,7 @@ func (m *multipartMetadataStore) DeleteObject(context.Context, string, string) e
 func (m *multipartMetadataStore) ListObjects(context.Context, string, string, int, string) ([]core.ObjectMetadata, error) {
 	return nil, nil
 }
-func (m *multipartMetadataStore) UpsertPrincipal(context.Context, core.Principal) error { return nil }
-func (m *multipartMetadataStore) UpsertRole(context.Context, core.Role) error           { return nil }
+func (m *multipartMetadataStore) UpsertRole(context.Context, core.Role) error { return nil }
 func (m *multipartMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
 	return core.AccessKey{}, core.ErrNotFound
 }

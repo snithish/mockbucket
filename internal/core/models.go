@@ -18,14 +18,10 @@ type Bucket struct {
 }
 
 type AccessKey struct {
-	ID            string    `json:"id" yaml:"id"`
-	Secret        string    `json:"secret" yaml:"secret"`
-	PrincipalName string    `json:"principal_name" yaml:"principal_name"`
-	CreatedAt     time.Time `json:"created_at" yaml:"-"`
-}
-
-type Principal struct {
-	Name string `json:"name" yaml:"name"`
+	ID           string    `json:"id" yaml:"id"`
+	Secret       string    `json:"secret" yaml:"secret"`
+	AllowedRoles []string  `json:"allowed_roles" yaml:"allowed_roles"`
+	CreatedAt    time.Time `json:"created_at" yaml:"-"`
 }
 
 type Role struct {

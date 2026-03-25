@@ -76,11 +76,8 @@ func (w testWriter) Write(p []byte) (int, error) {
 
 const defaultTestSeedYAML = `buckets:
   - demo
-principals:
-  - name: admin
 s3:
   access_keys:
     - id: admin
       secret: admin-secret
-      principal: admin
 `

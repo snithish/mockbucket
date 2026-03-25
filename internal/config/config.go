@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/snithish/mockbucket/internal/core"
 )
 
 type Config struct {
@@ -33,12 +31,15 @@ type StorageConfig struct {
 }
 
 type SeedData struct {
-	Buckets    []string         `yaml:"buckets"`
-	Principals []core.Principal `yaml:"principals"`
-	Roles      []core.Role      `yaml:"roles"`
-	Objects    []SeedObject     `yaml:"objects"`
-	S3         SeedS3Config     `yaml:"s3"`
-	GCS        SeedGCSConfig    `yaml:"gcs"`
+	Buckets []string      `yaml:"buckets"`
+	Roles   []SeedRole    `yaml:"roles"`
+	Objects []SeedObject  `yaml:"objects"`
+	S3      SeedS3Config  `yaml:"s3"`
+	GCS     SeedGCSConfig `yaml:"gcs"`
+}
+
+type SeedRole struct {
+	Name string `yaml:"name"`
 }
 
 type SeedObject struct {
@@ -52,13 +53,19 @@ type SeedS3Config struct {
 }
 
 type SeedS3AccessKey struct {
-	ID        string `yaml:"id"`
-	Secret    string `yaml:"secret"`
-	Principal string `yaml:"principal"`
+	ID           string   `yaml:"id"`
+	Secret       string   `yaml:"secret"`
+	AllowedRoles []string `yaml:"allowed_roles"`
 }
 
 type SeedGCSConfig struct {
-	Tokens []GCSToken `yaml:"tokens"`
+	Tokens             []GCSToken                 `yaml:"tokens"`
+	ServiceCredentials []SeedGCSServiceCredential `yaml:"service_credentials"`
+}
+
+type SeedGCSServiceCredential struct {
+	ClientEmail string `yaml:"client_email"`
+	Principal   string `yaml:"principal"`
 }
 
 type GCSToken struct {

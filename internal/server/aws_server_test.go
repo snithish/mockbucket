@@ -222,13 +222,14 @@ func newAWSConfig(t *testing.T, accessKeyID, secretKey, sessionToken string) aws
 
 const awsSTSTestSeedYAML = `buckets:
   - demo
-principals:
-  - name: admin
+roles:
+  - name: data-reader
 s3:
   access_keys:
     - id: admin
       secret: admin-secret
-      principal: admin
-roles:
-  - name: data-reader
+    - id: restricted
+      secret: restricted-secret
+      allowed_roles:
+        - data-reader
 `

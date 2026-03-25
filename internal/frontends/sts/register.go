@@ -44,7 +44,8 @@ func handleAssumeRole(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	session, err := deps.SessionManager.AssumeRole(r.Context(), roleName, sessionName)
+	accessKeyID := extractAccessKeyID(r.Header.Get("Authorization"))
+	session, err := deps.SessionManager.AssumeRole(r.Context(), roleName, sessionName, accessKeyID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -98,6 +99,25 @@ func roleNameFromARN(roleARN string) (string, error) {
 		return "", core.ErrInvalidArgument
 	}
 	return name, nil
+}
+
+// extractAccessKeyID parses the access key ID from an AWS SigV4 Authorization header.
+// Format: "AWS4-HMAC-SHA256 Credential=ACCESS_KEY/20240101/..."
+// Returns empty string if the header is missing or malformed.
+func extractAccessKeyID(authHeader string) string {
+	if !strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256") {
+		return ""
+	}
+	idx := strings.Index(authHeader, "Credential=")
+	if idx < 0 {
+		return ""
+	}
+	rest := authHeader[idx+len("Credential="):]
+	slash := strings.Index(rest, "/")
+	if slash < 0 {
+		return rest
+	}
+	return rest[:slash]
 }
 
 func writeXML(w http.ResponseWriter, status int, payload any) {
