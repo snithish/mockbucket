@@ -1,0 +1,8 @@
+services:
+  mockbucket:
+    build: .
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./docker/config.yaml:/etc/mockbucket/config.yaml:ro
+    command: ["--config", "/etc/mockbucket/config.yaml"]

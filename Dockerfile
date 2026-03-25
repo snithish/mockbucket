@@ -21,9 +21,7 @@ COPY docker/config.yaml /etc/mockbucket/config.yaml
 
 EXPOSE 9000
 
-USER nonroot:nonroot
-
-VOLUME ["/var/data"]
+USER nonroot
 
 ENTRYPOINT ["/mockbucketd"]
 CMD ["--config", "/etc/mockbucket/config.yaml"]

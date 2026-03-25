@@ -3,8 +3,8 @@ server:
   request_log: true
   shutdown_timeout: 10s
 storage:
-  root_dir: /var/data/objects
-  sqlite_path: /var/data/mockbucket.db
+  root_dir: /tmp/data/objects
+  sqlite_path: /tmp/data/mockbucket.db
 frontends:
   s3: true
   gcs: false

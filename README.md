@@ -123,17 +123,9 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - mockbucket-data:/var/data
-      - ./mockbucket.yaml:/etc/mockbucket/config.yaml:ro
+      - ./docker/config.yaml:/etc/mockbucket/config.yaml:ro
     command: ["--config", "/etc/mockbucket/config.yaml"]
-    healthcheck:
-      test: ["CMD", "/mockbucketd", "--healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
 
-volumes:
-  mockbucket-data:
 ```
 
 ### Persistent Storage
