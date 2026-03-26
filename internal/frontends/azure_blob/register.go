@@ -21,6 +21,16 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 			Key:  keyBytes,
 		})
 	}
+	for _, acc := range cfg.Seed.Azure.Accounts {
+		keyBytes, err := base64.StdEncoding.DecodeString(acc.Key)
+		if err != nil {
+			keyBytes = []byte(acc.Key)
+		}
+		accounts = append(accounts, azauth.AccountConfig{
+			Name: acc.Name,
+			Key:  keyBytes,
+		})
+	}
 
 	resolver := azauth.NewAuthResolver(accounts)
 

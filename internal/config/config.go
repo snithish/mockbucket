@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snithish/mockbucket/internal/seed"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,11 +33,12 @@ type StorageConfig struct {
 }
 
 type SeedData struct {
-	Buckets []string      `yaml:"buckets"`
-	Roles   []SeedRole    `yaml:"roles"`
-	Objects []SeedObject  `yaml:"objects"`
-	S3      SeedS3Config  `yaml:"s3"`
-	GCS     SeedGCSConfig `yaml:"gcs"`
+	Buckets []string             `yaml:"buckets"`
+	Roles   []SeedRole           `yaml:"roles"`
+	Objects []SeedObject         `yaml:"objects"`
+	S3      SeedS3Config         `yaml:"s3"`
+	GCS     SeedGCSConfig        `yaml:"gcs"`
+	Azure   seed.AzureSeedConfig `yaml:"azure"`
 }
 
 type SeedRole struct {

@@ -200,6 +200,9 @@ func seedDocument(s config.SeedData) seed.Document {
 			Tokens:             convertGCSConfigTokens(s.GCS.Tokens),
 			ServiceCredentials: make([]seed.GCSServiceCredSeed, 0, len(s.GCS.ServiceCredentials)),
 		},
+		Azure: seed.AzureSeedConfig{
+			Accounts: make([]seed.AzureAccountSeed, 0, len(s.Azure.Accounts)),
+		},
 	}
 	for _, r := range s.Roles {
 		doc.Roles = append(doc.Roles, seed.RoleSeed{Name: r.Name})
@@ -222,6 +225,13 @@ func seedDocument(s config.SeedData) seed.Document {
 		doc.GCS.ServiceCredentials = append(doc.GCS.ServiceCredentials, seed.GCSServiceCredSeed{
 			ClientEmail: sc.ClientEmail,
 			Principal:   sc.Principal,
+		})
+	}
+	for _, acc := range s.Azure.Accounts {
+		doc.Azure.Accounts = append(doc.Azure.Accounts, seed.AzureAccountSeed{
+			Name:      acc.Name,
+			Key:       acc.Key,
+			DNSSuffix: acc.DNSSuffix,
 		})
 	}
 	return doc

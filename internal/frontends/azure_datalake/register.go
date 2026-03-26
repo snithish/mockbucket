@@ -21,11 +21,27 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 			Key:  keyBytes,
 		})
 	}
+	for _, acc := range cfg.Seed.Azure.Accounts {
+		keyBytes, err := base64.StdEncoding.DecodeString(acc.Key)
+		if err != nil {
+			keyBytes = []byte(acc.Key)
+		}
+		accounts = append(accounts, azauth.AccountConfig{
+			Name: acc.Name,
+			Key:  keyBytes,
+		})
+	}
 
 	resolver := azauth.NewAuthResolver(accounts)
 
+	// Collect account names for path stripping (Python SDK includes account in path).
+	accountNames := make(map[string]struct{}, len(accounts))
+	for _, acc := range accounts {
+		accountNames[acc.Name] = struct{}{}
+	}
+
 	dfsMux := http.NewServeMux()
-	registerDFSHandlers(dfsMux, deps, resolver)
+	registerDFSHandlers(dfsMux, deps, resolver, accountNames)
 	dfsHandler := azauth.AuthenticateAnonymousOrSharedKey(resolver)(dfsMux)
 
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

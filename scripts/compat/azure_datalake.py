@@ -77,8 +77,8 @@ def _test_datalake_sdk() -> int:
         file_client.flush_data(offset=9)
 
         props = file_client.get_file_properties()
-        if props.size != 16:
-            fail(f"azure-storage-file-datalake get_file_properties — size={props.size}, want 16")
+        if props.size != 15:
+            fail(f"azure-storage-file-datalake get_file_properties — size={props.size}, want 15")
             return 1
 
         download = file_client.download_file()

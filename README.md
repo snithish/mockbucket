@@ -6,9 +6,9 @@
 [![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
 [![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
 
-A standalone, local object-storage emulator for **S3**, **STS**, and **GCS**. Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
+A standalone, local object-storage emulator for **S3**, **STS**, **Azure**, and **GCS**. Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
 
-MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and serves requests without authentication or authorization — every operation is open by design. This keeps the emulator simple and fast while remaining wire-compatible with real AWS and GCP SDKs.
+MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and serves requests without authentication or authorization — every operation is open by design. This keeps the emulator simple and fast while remaining wire-compatible with real AWS, Azure, and GCP SDKs.
 
 ## Table of Contents
 
@@ -31,6 +31,7 @@ MockBucket persists object bytes on the filesystem, stores metadata in SQLite, a
   - [Access Keys](#access-keys)
   - [Roles](#roles)
   - [GCS Service Credentials](#gcs-service-credentials)
+  - [Azure Accounts](#azure-accounts)
   - [Objects](#objects)
 - [Usage Examples](#usage-examples)
   - [AWS CLI](#aws-cli)
@@ -193,21 +194,21 @@ seed:
 
 ### Frontends
 
-Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime. STS is automatically available when S3 is enabled.
+Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime. STS is automatically available when S3 is enabled. Azure frontends are selected via the `type` field:
 
 ```yaml
 frontends:
-  s3: true       # enable S3-compatible API (+ STS)
-  gcs: false     # GCS frontend
-  azure: false   # Azure frontend (scaffold, disabled)
+  type: s3              # s3, gcs, azure_blob, azure_datalake
 ```
 
 Supported profiles:
 
-| S3 | GCS | Use case |
-|----|-----|----------|
-| true | false | AWS-compatible testing with STS (default) |
-| false | true | GCS-only testing |
+| Frontend | Use case |
+|----------|----------|
+| `s3` | AWS-compatible testing with STS (default) |
+| `gcs` | GCS-only testing |
+| `azure_blob` | Azure Blob Storage |
+| `azure_datalake` | Azure Data Lake Gen2 |
 
 ### Auth
 
@@ -225,6 +226,7 @@ MockBucket is intentionally **authless**. This is the right trade-off for a loca
 - **No trust policy checks on AssumeRole.** STS `AssumeRole` succeeds for any role that exists in the seed. You can restrict which roles each access key can assume via `allowed_roles`.
 - **STS auto-enables with S3.** There is no `frontends.sts` config flag. When `s3: true`, STS is always available.
 - **No top-level principals.** Identity is scoped per-provider: S3 access keys carry `allowed_roles`, GCS service credentials carry `client_email`/`principal`.
+- **Azure uses IP-style URLs.** Like [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url) with `--disableProductStyleUrl`, the account name is part of the URL path (`http://host:port/<account>/<container>/<blob>`). MockBucket parses the account name from the request path and validates it against seed data. Multiple accounts are supported.
 
 If you need real auth or IAM enforcement for testing, use a different tool or a real AWS sandbox. MockBucket's value is fast, deterministic, wire-compatible S3/STS/GCS — not security simulation.
 
@@ -282,6 +284,25 @@ gcs:
     - token: "hardcoded-token-123"
       principal: admin
 ```
+
+### Azure Accounts
+
+Define Azure storage accounts under `azure.accounts`. Each entry requires a `name` and a base64-encoded `key`. MockBucket uses [IP-style URLs](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url) like Azurite — the account name is parsed from the request path and matched against seed data.
+
+```yaml
+azure:
+  accounts:
+    - name: mockstorage
+      key: bW9ja3N0b3JhZ2Uta2V5LTMyYnl0ZXMhIQ==
+```
+
+Point your SDK at the MockBucket endpoint using the account name in the connection string:
+
+```text
+DefaultEndpointsProtocol=http;AccountName=mockstorage;AccountKey=<base64>;BlobEndpoint=http://localhost:9000;EndpointSuffix=core.windows.net
+```
+
+The `azure_blob` and `azure_datalake` frontends are mutually exclusive at runtime (like S3 and GCS). STS is independent and can coexist with either Azure frontend.
 
 ### Objects
 
@@ -434,7 +455,8 @@ internal/
     s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
     sts/                  -- STS wire protocol (AssumeRole)
     gcs/                  -- GCS wire protocol
-    azure/                -- Azure scaffold (disabled)
+    azure_blob/             -- Azure Blob Storage wire protocol
+    azure_datalake/         -- Azure Data Lake Gen2 wire protocol
   httpx/                  -- shared middleware, error mapping, request context
   core/                   -- sentinel errors, domain models
 ```
@@ -473,6 +495,12 @@ uv run scripts/compat/run_all.py test aws
 
 # GCS tests only
 uv run scripts/compat/run_all.py test gcs
+
+# Azure Blob tests only
+uv run scripts/compat/run_all.py test azure_blob
+
+# Azure Data Lake tests only
+uv run scripts/compat/run_all.py test azure_datalake
 
 # Start server for manual testing
 uv run scripts/compat/run_all.py serve

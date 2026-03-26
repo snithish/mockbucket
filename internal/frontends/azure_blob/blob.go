@@ -312,6 +312,7 @@ func handlePutBlob(w http.ResponseWriter, r *http.Request, deps common.Dependenc
 		return
 	}
 
+	w.Header().Set("x-ms-blob-type", "BlockBlob")
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, meta.ETag))
 	w.Header().Set("Last-Modified", meta.ModifiedAt.Format(time.RFC1123))
 	w.Header().Set("Content-MD5", meta.ETag)
@@ -342,6 +343,11 @@ func handleGetBlob(w http.ResponseWriter, r *http.Request, deps common.Dependenc
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", obj.Size))
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if obj.Size > 0 {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", obj.Size-1, obj.Size))
+	} else {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", obj.Size))
+	}
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, obj.ETag))
 	w.Header().Set("Last-Modified", obj.ModifiedAt.Format(time.RFC1123))
 	w.Header().Set("x-ms-version", "2021-06-08")

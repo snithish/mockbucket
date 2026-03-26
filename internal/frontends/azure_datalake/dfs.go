@@ -14,7 +14,7 @@ import (
 	"github.com/snithish/mockbucket/internal/frontends/common"
 )
 
-func registerDFSHandlers(mux *http.ServeMux, deps common.Dependencies, resolver azauth.Authenticator) {
+func registerDFSHandlers(mux *http.ServeMux, deps common.Dependencies, resolver azauth.Authenticator, accountNames map[string]struct{}) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("x-ms-version", "2021-06-08")
 
@@ -23,8 +23,19 @@ func registerDFSHandlers(mux *http.ServeMux, deps common.Dependencies, resolver 
 		comp := r.URL.Query().Get("comp")
 		action := r.URL.Query().Get("action")
 
-		pathParts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
-		fs := pathParts[0]
+		// Python SDK sends paths like /{account}/{filesystem}/{filePath}.
+		// Strip the account prefix when present so fs/filePath are correct.
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		pathParts := strings.SplitN(path, "/", 3)
+		if len(pathParts) >= 3 {
+			if _, ok := accountNames[pathParts[0]]; ok {
+				pathParts = []string{pathParts[1], pathParts[2]}
+			}
+		}
+		fs := ""
+		if len(pathParts) > 0 {
+			fs = pathParts[0]
+		}
 		var filePath string
 		if len(pathParts) > 1 {
 			filePath = pathParts[1]
@@ -421,6 +432,11 @@ func handleReadFile(w http.ResponseWriter, r *http.Request, deps common.Dependen
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", obj.Size))
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if obj.Size > 0 {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", obj.Size-1, obj.Size))
+	} else {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", obj.Size))
+	}
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, obj.ETag))
 	w.Header().Set("Last-Modified", obj.ModifiedAt.Format(time.RFC1123))
 	w.Header().Set("x-ms-version", "2021-06-08")
@@ -528,17 +544,24 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+type DFSErrorDetail struct {
+	XMLName xml.Name `xml:"Error"`
+	Code    string   `xml:"Code"`
+	Message string   `xml:"Message"`
+}
+
 type DFSError struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func writeDFSError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-ms-error-code", code)
+	resp := DFSErrorDetail{Code: code, Message: message}
+	raw, _ := xml.MarshalIndent(resp, "", "  ")
+	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	resp := DFSError{Error: message, Code: code}
-	_ = json.NewEncoder(w).Encode(resp)
+	_, _ = w.Write([]byte(xml.Header + string(raw)))
 }
 
 func writeDFSDatalakeError(w http.ResponseWriter, status int, code, message string) {
