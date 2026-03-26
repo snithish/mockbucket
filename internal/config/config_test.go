@@ -33,3 +33,27 @@ func TestValidateRejectsInvalidConfig(t *testing.T) {
 		t.Fatal("Validate() error = nil, want validation error")
 	}
 }
+
+func TestValidateFrontendType(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     FrontendType
+		wantErr bool
+	}{
+		{name: "s3", typ: FrontendS3},
+		{name: "gcs", typ: FrontendGCS},
+		{name: "azure_blob", typ: FrontendAzureBlob},
+		{name: "azure_datalake", typ: FrontendAzureDataLake},
+		{name: "empty", typ: "", wantErr: true},
+		{name: "invalid", typ: "invalid", wantErr: true},
+	}
+
+	for _, tt := range cases {
+		cfg := Default()
+		cfg.Frontends.Type = tt.typ
+		err := cfg.Validate()
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("%s: Validate() error = %v, wantErr %v", tt.name, err, tt.wantErr)
+		}
+	}
+}

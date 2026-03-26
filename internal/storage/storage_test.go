@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -208,6 +209,129 @@ func TestListObjectsUsesLiteralPrefix(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Key != "logs/%done.txt" {
 		t.Fatalf("expected literal prefix match, got %+v", items)
+	}
+}
+
+func TestOpenSQLiteMigratesLegacyAccessKeysTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mockbucket.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE access_keys (
+			id TEXT PRIMARY KEY,
+			secret TEXT NOT NULL,
+			principal_name TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL
+		)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy access_keys error = %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO access_keys(id, secret, principal_name, created_at)
+		VALUES('legacy', 'secret', 'legacy-principal', CURRENT_TIMESTAMP)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert legacy access key error = %v", err)
+	}
+	_ = db.Close()
+
+	metadata, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	columns := map[string]bool{}
+	rows, err := metadata.db.Query(`PRAGMA table_info(access_keys)`)
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(access_keys) error = %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("rows.Scan() error = %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err() error = %v", err)
+	}
+	if !columns["allowed_roles_json"] {
+		t.Fatal("access_keys.allowed_roles_json missing after migration")
+	}
+	if columns["principal_name"] {
+		t.Fatal("access_keys.principal_name still present after migration")
+	}
+
+	key, err := metadata.FindAccessKey(context.Background(), "legacy")
+	if err != nil {
+		t.Fatalf("FindAccessKey() error = %v", err)
+	}
+	if len(key.AllowedRoles) != 0 {
+		t.Fatalf("allowed_roles = %v, want empty", key.AllowedRoles)
+	}
+}
+
+func TestOpenSQLiteDropsRedundantIndexes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mockbucket.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	legacyDDL := []string{
+		`CREATE TABLE objects (
+			bucket TEXT NOT NULL,
+			key TEXT NOT NULL,
+			path TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			modified_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (bucket, key)
+		)`,
+		`CREATE INDEX idx_objects_bucket_key ON objects(bucket, key)`,
+		`CREATE TABLE multipart_parts (
+			upload_id TEXT NOT NULL,
+			part_number INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			path TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (upload_id, part_number)
+		)`,
+		`CREATE INDEX idx_multipart_parts_upload_id ON multipart_parts(upload_id)`,
+	}
+	for _, statement := range legacyDDL {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("legacy schema exec error = %v", err)
+		}
+	}
+	_ = db.Close()
+
+	metadata, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	names := []string{"idx_objects_bucket_key", "idx_multipart_parts_upload_id"}
+	for _, name := range names {
+		var count int
+		if err := metadata.db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`,
+			name,
+		).Scan(&count); err != nil {
+			t.Fatalf("index lookup error = %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("index %q still exists after migration", name)
+		}
 	}
 }
 

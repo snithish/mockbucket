@@ -18,18 +18,6 @@ type Authenticator interface {
 	ResolveAccessKey(ctx context.Context, accessKeyID string) (core.Subject, error)
 }
 
-type JWTTokenIssuer interface {
-	// IssueTokenFromJWT parses a JWT assertion payload (without signature
-	// verification), extracts the client email, looks up the seeded service
-	// account, and issues a new bearer token.
-	IssueTokenFromJWT(ctx context.Context, jwtAssertion string) (core.Session, error)
-}
-
-type GCSTokenIssuer interface {
-	// IssueTokenForPrincipal issues a simple bearer token for a GCS principal.
-	IssueTokenForPrincipal(ctx context.Context, principalName string) (core.Session, error)
-}
-
 // Authenticate wraps next with GCS-style request authentication.
 // Accepted credential sources (checked in order):
 //  1. Authorization: Bearer <token>  — resolved as a session token

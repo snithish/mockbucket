@@ -62,13 +62,6 @@ type SeedState struct {
 	Objects         []SeedObject
 	AccessKeys      []SeedAccessKey
 	ServiceAccounts []core.ServiceAccount
-	AzureAccounts   []AzureAccountConfig
-}
-
-type AzureAccountConfig struct {
-	Name      string
-	Key       []byte
-	DNSSuffix string
 }
 
 type SeedAccessKey struct {
@@ -224,8 +217,7 @@ func (s *SQLiteStore) initSchema() error {
 			modified_at TIMESTAMP NOT NULL,
 			PRIMARY KEY (bucket, key)
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_objects_bucket_key ON objects(bucket, key);`,
-		`CREATE TABLE IF NOT EXISTS access_keys (id TEXT PRIMARY KEY, secret TEXT NOT NULL, allowed_roles_json TEXT NOT NULL DEFAULT '[]', principal_name TEXT NOT NULL DEFAULT '', created_at TIMESTAMP NOT NULL);`,
+		`CREATE TABLE IF NOT EXISTS access_keys (id TEXT PRIMARY KEY, secret TEXT NOT NULL, allowed_roles_json TEXT NOT NULL DEFAULT '[]', created_at TIMESTAMP NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, created_at TIMESTAMP NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			token TEXT PRIMARY KEY,
@@ -254,7 +246,6 @@ func (s *SQLiteStore) initSchema() error {
 			created_at TIMESTAMP NOT NULL,
 			PRIMARY KEY (upload_id, part_number)
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_multipart_parts_upload_id ON multipart_parts(upload_id);`,
 		`CREATE TABLE IF NOT EXISTS service_accounts (
 			token TEXT PRIMARY KEY,
 			client_email TEXT NOT NULL,
@@ -267,34 +258,106 @@ func (s *SQLiteStore) initSchema() error {
 			return fmt.Errorf("init schema: %w", err)
 		}
 	}
-	return s.migrateAccessKeys()
+	return s.migrateSchema()
+}
+
+func (s *SQLiteStore) migrateSchema() error {
+	if err := s.migrateAccessKeys(); err != nil {
+		return err
+	}
+	if err := s.dropRedundantIndexes(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *SQLiteStore) migrateAccessKeys() error {
-	rows, err := s.db.Query(`PRAGMA table_info(access_keys)`)
+	columns, err := tableColumns(s.db, "access_keys")
 	if err != nil {
 		return err
 	}
+	_, hasAllowedRoles := columns["allowed_roles_json"]
+	_, hasPrincipalName := columns["principal_name"]
+	if !hasAllowedRoles {
+		if _, err := s.db.Exec(`ALTER TABLE access_keys ADD COLUMN allowed_roles_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("migrate access_keys: %w", err)
+		}
+		hasAllowedRoles = true
+	}
+	if hasPrincipalName {
+		if err := s.rebuildAccessKeysTable(hasAllowedRoles); err != nil {
+			return fmt.Errorf("migrate access_keys: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) rebuildAccessKeysTable(hasAllowedRoles bool) error {
+	return s.withTx(context.Background(), func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`
+			CREATE TABLE access_keys_new (
+				id TEXT PRIMARY KEY,
+				secret TEXT NOT NULL,
+				allowed_roles_json TEXT NOT NULL DEFAULT '[]',
+				created_at TIMESTAMP NOT NULL
+			)`); err != nil {
+			return err
+		}
+		insertStmt := `
+			INSERT INTO access_keys_new(id, secret, allowed_roles_json, created_at)
+			SELECT id, secret, '[]', created_at
+			FROM access_keys`
+		if hasAllowedRoles {
+			insertStmt = `
+				INSERT INTO access_keys_new(id, secret, allowed_roles_json, created_at)
+				SELECT id, secret, COALESCE(NULLIF(TRIM(allowed_roles_json), ''), '[]'), created_at
+				FROM access_keys`
+		}
+		if _, err := tx.Exec(insertStmt); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP TABLE access_keys`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`ALTER TABLE access_keys_new RENAME TO access_keys`); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (s *SQLiteStore) dropRedundantIndexes() error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_objects_bucket_key`,
+		`DROP INDEX IF EXISTS idx_multipart_parts_upload_id`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
-	hasAllowedRoles := false
+
+	columns := map[string]struct{}{}
 	for rows.Next() {
 		var cid int
 		var name, typ string
 		var notnull, pk int
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
+			return nil, err
 		}
-		if name == "allowed_roles_json" {
-			hasAllowedRoles = true
-		}
+		columns[name] = struct{}{}
 	}
-	if !hasAllowedRoles {
-		if _, err := s.db.Exec(`ALTER TABLE access_keys ADD COLUMN allowed_roles_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
-			return fmt.Errorf("migrate access_keys: %w", err)
-		}
-	}
-	return nil
+	return columns, rows.Err()
 }
 
 func (s *SQLiteStore) EnsureBucket(ctx context.Context, name string) error {

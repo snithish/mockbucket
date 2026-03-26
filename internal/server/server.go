@@ -33,7 +33,7 @@ type Runtime struct {
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime, error) {
-	if err := frontends.Validate(cfg); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.Storage.SQLitePath), 0o755); err != nil {

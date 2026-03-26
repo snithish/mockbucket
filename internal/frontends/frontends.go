@@ -1,7 +1,6 @@
 package frontends
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/snithish/mockbucket/internal/config"
@@ -12,18 +11,6 @@ import (
 	"github.com/snithish/mockbucket/internal/frontends/s3"
 	"github.com/snithish/mockbucket/internal/seed"
 )
-
-func Validate(cfg config.Config) error {
-	if cfg.Frontends.Type == "" {
-		return fmt.Errorf("frontend.type is required")
-	}
-	switch cfg.Frontends.Type {
-	case config.FrontendS3, config.FrontendGCS, config.FrontendAzureBlob, config.FrontendAzureDataLake:
-		return nil
-	default:
-		return fmt.Errorf("frontend.type must be one of: s3, gcs, azure_blob, azure_datalake")
-	}
-}
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, gcsServiceAccounts []seed.ServiceAccountJSON) {
 	switch cfg.Frontends.Type {

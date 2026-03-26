@@ -2,7 +2,6 @@ package seed
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 
 	"github.com/snithish/mockbucket/internal/core"
@@ -43,17 +42,6 @@ func Apply(ctx context.Context, doc Document, metadata *storage.SQLiteStore, obj
 			ClientEmail: sc.ClientEmail,
 			Principal:   sc.Principal,
 			Token:       fmt.Sprintf("jwt:%s", sc.ClientEmail),
-		})
-	}
-	for _, acc := range doc.Azure.Accounts {
-		keyBytes, err := base64.StdEncoding.DecodeString(acc.Key)
-		if err != nil {
-			keyBytes = []byte(acc.Key)
-		}
-		state.AzureAccounts = append(state.AzureAccounts, storage.AzureAccountConfig{
-			Name:      acc.Name,
-			Key:       keyBytes,
-			DNSSuffix: acc.DNSSuffix,
 		})
 	}
 	return metadata.ApplySeedState(ctx, state, objects)
