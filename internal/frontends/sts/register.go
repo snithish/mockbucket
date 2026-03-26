@@ -98,7 +98,8 @@ func roleNameFromARN(roleARN string) (string, error) {
 	return name, nil
 }
 
-// extractAccessKeyID parses the access key ID from an AWS SigV4 Authorization header.
+// extractAccessKeyID parses the access key ID field from an AWS SigV4
+// Authorization header. It does not verify request signatures.
 // Format: "AWS4-HMAC-SHA256 Credential=ACCESS_KEY/20240101/..."
 // Returns empty string if the header is missing or malformed.
 func extractAccessKeyID(authHeader string) string {

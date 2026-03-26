@@ -207,14 +207,14 @@ frontends:
   type: s3              # s3, gcs, azure_blob, azure_datalake
 ```
 
-Supported profiles:
+Supported frontend profiles:
 
 | Frontend | Use case |
 |----------|----------|
-| `s3` | AWS-compatible testing with STS (default) |
-| `gcs` | GCS-only testing |
-| `azure_blob` | Azure Blob Storage |
-| `azure_datalake` | Azure Data Lake Gen2 |
+| `s3` | AWS S3 protocol subset with STS compatibility endpoint (default) |
+| `gcs` | GCS protocol subset with authenticated-subject gating |
+| `azure_blob` | Azure Blob protocol subset (anonymous or account-aware SharedKey mode) |
+| `azure_datalake` | Azure Data Lake Gen2 subset plus Blob-compat bridge operations for SDKs |
 
 ### Auth
 
@@ -266,6 +266,12 @@ response instead of pretending parity with Azure cloud behavior.
   `allowed_roles` enforcement is the current model.
 - **No full IAM policy engine.** Action/resource authorization is intentionally
   minimal and frontend-specific.
+- **GCS action/resource labels are compatibility-only.** Handlers carry
+  `storage.*` action/resource names, but enforcement is currently
+  authenticated-subject presence only.
+- **Azure SharedKey mode is account-aware, not signature-validating.** The
+  account in `Authorization: SharedKey ...` must exist, but request signatures
+  are not currently verified.
 - **STS auto-enables with S3.** There is no `frontends.sts` config flag. STS is
   available only when `frontends.type: s3`.
 - **Azure uses IP-style URLs.** Like

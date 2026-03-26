@@ -19,8 +19,9 @@ type Authenticator interface {
 }
 
 type JWTTokenIssuer interface {
-	// IssueTokenFromJWT validates a JWT assertion, extracts the client email,
-	// looks up the service account, and issues a new bearer token.
+	// IssueTokenFromJWT parses a JWT assertion payload (without signature
+	// verification), extracts the client email, looks up the seeded service
+	// account, and issues a new bearer token.
 	IssueTokenFromJWT(ctx context.Context, jwtAssertion string) (core.Session, error)
 }
 
@@ -72,8 +73,8 @@ type tokenResponse struct {
 }
 
 // TokenEndpoint returns an http.HandlerFunc that mimics Google's OAuth2 token
-// endpoint.  It accepts two grant types and returns a bearer token derived from
-// the resolved principal.
+// endpoint for compatibility testing. It accepts two grant types and returns a
+// bearer token derived from a seeded service account principal.
 //
 // POST /oauth2/v4/token
 //

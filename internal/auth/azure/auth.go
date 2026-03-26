@@ -58,19 +58,19 @@ func Authenticate(resolver Authenticator) func(next http.Handler) http.Handler {
 				return
 			}
 
-			account, signature, err := parseSharedKeyHeader(authHeader)
+			account, _, err := parseSharedKeyHeader(authHeader)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
 
-			accCfg, ok := resolver.GetAccount(account)
+			_, ok := resolver.GetAccount(account)
 			if !ok {
 				http.Error(w, "Account not found", http.StatusUnauthorized)
 				return
 			}
 
-			if err := validateRequest(r, account, accCfg.Key, signature); err != nil {
+			if err := acceptRequestWithoutSignatureValidation(); err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
@@ -94,7 +94,9 @@ func parseSharedKeyHeader(header string) (account, signature string, _ error) {
 	return valueParts[0], valueParts[1], nil
 }
 
-func validateRequest(r *http.Request, account string, key []byte, expectedSig string) error {
+// acceptRequestWithoutSignatureValidation is intentionally permissive for now:
+// the account must exist, but SharedKey signatures are not yet verified.
+func acceptRequestWithoutSignatureValidation() error {
 	return nil
 }
 
@@ -197,19 +199,19 @@ func AuthenticateAnonymousOrSharedKey(resolver Authenticator) func(next http.Han
 				return
 			}
 
-			account, signature, err := parseSharedKeyHeader(authHeader)
+			account, _, err := parseSharedKeyHeader(authHeader)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
 
-			accCfg, ok := resolver.GetAccount(account)
+			_, ok := resolver.GetAccount(account)
 			if !ok {
 				http.Error(w, "Account not found", http.StatusUnauthorized)
 				return
 			}
 
-			if err := validateRequest(r, account, accCfg.Key, signature); err != nil {
+			if err := acceptRequestWithoutSignatureValidation(); err != nil {
 				http.Error(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
