@@ -12,11 +12,6 @@ from compat import ENDPOINT, fail, ok, skip
 from parquet import read_count, s3_con, write_parquet_s3
 
 
-def configure() -> dict:
-    """Return config overrides for the AWS (S3+STS) frontend."""
-    return {"s3": True, "gcs": False}
-
-
 def export_env() -> dict[str, str]:
     """Return extra env vars needed by AWS tools."""
     return {

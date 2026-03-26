@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import os
 import urllib.request
 
@@ -11,11 +9,6 @@ from compat import ENDPOINT, fail, ok, skip
 
 ACCOUNT_NAME = "mockstorage"
 ACCOUNT_KEY = base64.b64encode(b"mockstorage-key-32bytes!!").decode()
-
-
-def configure() -> dict:
-    """Return config overrides for the Azure Blob frontend."""
-    return {"s3": False, "gcs": False, "azure": True}
 
 
 def seed() -> str:
@@ -46,41 +39,6 @@ def export_env() -> dict[str, str]:
 def run() -> int:
     """Run Azure Blob compat tests. Returns error count."""
     return _test_blob_sdk() + _test_blob_sdk_containers()
-
-
-def _compute_shared_key(account_name: str, account_key: bytes, method: str, path: str, query: str = "", body: bytes = b"") -> str:
-    """Compute Azure Shared Key signature."""
-    string_to_sign = f"{method}\n\n{len(body)}\n\n\n\n\n\n\n\n\n\n\n{query}\n{path}\n{account_name}"
-    key = base64.b64decode(account_key)
-    signature = base64.b64encode(hmac.new(key, string_to_sign.encode(), hashlib.sha256).digest()).decode()
-    return f"SharedKey {account_name}:{signature}"
-
-
-def _make_signed_request(method: str, path: str, query: str = "", body: bytes = b"") -> dict:
-    """Make an HTTP request with Shared Key authentication."""
-    url = f"{ENDPOINT}{path}"
-    if query:
-        url = f"{url}?{query}"
-
-    signature = _compute_shared_key(ACCOUNT_NAME, ACCOUNT_KEY.encode(), method, path, query, body)
-
-    headers = {
-        "x-ms-date": "Wed, 25 Mar 2026 12:00:00 GMT",
-        "x-ms-version": "2021-06-08",
-        "Authorization": signature,
-        "Content-Type": "application/octet-stream",
-    }
-
-    if body:
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    else:
-        req = urllib.request.Request(url, headers=headers, method=method)
-
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return {"status": resp.status, "headers": dict(resp.headers), "body": resp.read()}
-    except urllib.error.HTTPError as e:
-        return {"status": e.code, "headers": dict(e.headers), "body": e.read()}
 
 
 def _test_blob_sdk() -> int:

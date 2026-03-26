@@ -19,11 +19,6 @@ gcs:
 """
 
 
-def configure() -> dict:
-    """Return config overrides for the GCS frontend."""
-    return {"s3": False, "gcs": True}
-
-
 def seed() -> str:
     """Return the GCS-specific seed YAML."""
     return SEED

@@ -9,11 +9,6 @@ ACCOUNT_NAME = "mockstorage"
 ACCOUNT_KEY = base64.b64encode(b"mockstorage-key-32bytes!!").decode()
 
 
-def configure() -> dict:
-    """Return config overrides for the Azure Data Lake frontend."""
-    return {"s3": False, "gcs": False, "azure": True}
-
-
 def seed() -> str:
     """Return seed YAML with Azure accounts."""
     return f"""\
