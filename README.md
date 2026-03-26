@@ -6,9 +6,15 @@
 [![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
 [![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
 
-A standalone, local object-storage emulator for **S3**, **STS**, **Azure**, and **GCS**. Run cloud-compatible workloads on your laptop or inside CI without touching a live AWS or GCP account.
+A standalone, local object-storage emulator for **S3**, **STS**, **Azure**, and
+**GCS**. Run cloud-compatible workloads on your laptop or inside CI without
+touching a live AWS or GCP account.
 
-MockBucket persists object bytes on the filesystem, stores metadata in SQLite, and serves requests without authentication or authorization — every operation is open by design. This keeps the emulator simple and fast while remaining wire-compatible with real AWS, Azure, and GCP SDKs.
+MockBucket persists object bytes on the filesystem and stores metadata in
+SQLite. Authentication and authorization behavior is frontend-specific: S3
+object APIs are open, STS is identity-aware, GCS requires an authenticated
+subject, and Azure supports anonymous requests with optional SharedKey account
+selection.
 
 ## Table of Contents
 
@@ -219,16 +225,56 @@ auth:
 
 ## Design Caveats
 
-MockBucket is intentionally **authless**. This is the right trade-off for a local dev and CI emulator, but it differs from real cloud behavior in important ways:
+### Terms used in this README
 
-- **No SigV4 verification.** S3 and STS requests are accepted regardless of the access key ID, secret key, or signature. Any AWS SDK client works because the server does not check credentials.
-- **No IAM policy evaluation.** Seed data supports `principals`, `roles`, and `policies`, but no access control is enforced. Every operation is allowed.
-- **No trust policy checks on AssumeRole.** STS `AssumeRole` succeeds for any role that exists in the seed. You can restrict which roles each access key can assume via `allowed_roles`.
-- **STS auto-enables with S3.** There is no `frontends.sts` config flag. When `s3: true`, STS is always available.
-- **No top-level principals.** Identity is scoped per-provider: S3 access keys carry `allowed_roles`, GCS service credentials carry `client_email`/`principal`.
-- **Azure uses IP-style URLs.** Like [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url) with `--disableProductStyleUrl`, the account name is part of the URL path (`http://host:port/<account>/<container>/<blob>`). MockBucket parses the account name from the request path and validates it against seed data. Multiple accounts are supported.
+- **Authenticated:** a request must include credentials that resolve to a
+  subject in MockBucket.
+- **Identity-aware:** request behavior depends on identity-related seed data
+  (roles, service accounts, sessions), even if request signatures are not
+  cryptographically verified.
+- **Authorization:** per-action/per-resource policy evaluation. MockBucket does
+  not implement full IAM-style authorization for any frontend.
 
-If you need real auth or IAM enforcement for testing, use a different tool or a real AWS sandbox. MockBucket's value is fast, deterministic, wire-compatible S3/STS/GCS — not security simulation.
+### Provider support and auth matrix
+
+| Frontend | Authentication model | Identity behavior | Authorization model |
+|----------|----------------------|-------------------|---------------------|
+| `s3` | Not required | None for object APIs | Open object/bucket operations |
+| `sts` (with `s3`) | SigV4 header parsed, signature not verified | `AssumeRole` requires seeded role; `allowed_roles` is enforced for known access keys | No trust-policy or action/resource authorization |
+| `gcs` | Required bearer/access token subject | Subject resolved from seeded GCS tokens, seeded service-account tokens, or `/oauth2/v4/token` session issuance | Authenticated subjects are allowed; no bucket/object IAM checks |
+| `azure_blob` | Anonymous allowed; optional `SharedKey` header | `SharedKey` requires known account name; signature is currently not verified | No per-operation authorization checks |
+| `azure_datalake` | Same as `azure_blob` | Same as `azure_blob` | No per-operation authorization checks |
+
+### Azure Data Lake committed support scope
+
+The `azure_datalake` frontend is committed to these SDK-visible behaviors:
+
+- Filesystem operations: list, create, get properties, delete.
+- Path operations: create file, create directory, append, flush, read, head,
+  delete, list.
+- Blob-compatible bridge operations used by the Data Lake SDK:
+  `comp=list`, `restype=container` create/get/head.
+
+Anything outside this scope must return a clear unsupported/not-implemented
+response instead of pretending parity with Azure cloud behavior.
+
+### Additional caveats
+
+- **No SigV4 verification.** S3 and STS requests are accepted even when the
+  signature does not validate.
+- **No trust-policy checks on STS `AssumeRole`.** Role existence plus
+  `allowed_roles` enforcement is the current model.
+- **No full IAM policy engine.** Action/resource authorization is intentionally
+  minimal and frontend-specific.
+- **STS auto-enables with S3.** There is no `frontends.sts` config flag. STS is
+  available only when `frontends.type: s3`.
+- **Azure uses IP-style URLs.** Like
+  [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url)
+  with `--disableProductStyleUrl`, account name is part of the path.
+
+If you need strict auth verification or full cloud IAM behavior, use a real
+cloud sandbox or another tool. MockBucket focuses on deterministic local
+protocol compatibility.
 
 ## Seeding State
 
@@ -287,7 +333,11 @@ gcs:
 
 ### Azure Accounts
 
-Define Azure storage accounts under `azure.accounts`. Each entry requires a `name` and a base64-encoded `key`. MockBucket uses [IP-style URLs](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url) like Azurite — the account name is parsed from the request path and matched against seed data.
+Define Azure storage accounts under `seed.azure.accounts`. Each entry requires a
+`name` and a base64-encoded `key`. MockBucket uses
+[IP-style URLs](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url)
+like Azurite: account name is parsed from the request path and matched against
+seed data.
 
 ```yaml
 azure:
@@ -301,6 +351,10 @@ Point your SDK at the MockBucket endpoint using the account name in the connecti
 ```text
 DefaultEndpointsProtocol=http;AccountName=mockstorage;AccountKey=<base64>;BlobEndpoint=http://localhost:9000;EndpointSuffix=core.windows.net
 ```
+
+The top-level `azure:` config block is still accepted for backward
+compatibility, but `seed.azure.accounts` is the canonical source for account
+data.
 
 The `azure_blob` and `azure_datalake` frontends are mutually exclusive at runtime (like S3 and GCS). STS is independent and can coexist with either Azure frontend.
 
@@ -461,7 +515,10 @@ internal/
   core/                   -- sentinel errors, domain models
 ```
 
-Object bytes are streamed to the filesystem. Bucket/object metadata, listings, multipart state, and session records live in SQLite. S3 and STS have no authentication or authorization. GCS uses bearer token auth for service account compatibility.
+Object bytes are streamed to the filesystem. Bucket/object metadata, listings,
+multipart state, and session records live in SQLite. S3 object APIs are open;
+STS is identity-aware; GCS requires authenticated subjects; Azure supports
+anonymous mode with optional SharedKey account selection.
 
 ## Testing
 
