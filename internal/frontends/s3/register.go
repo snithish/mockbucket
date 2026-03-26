@@ -115,7 +115,7 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 
 func handleHeadBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -123,7 +123,7 @@ func handleHeadBucket(w http.ResponseWriter, r *http.Request, deps common.Depend
 
 func handleGetBucketLocation(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	response := struct {
@@ -140,7 +140,7 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, r.Body)
@@ -163,7 +163,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
@@ -213,7 +213,7 @@ func handleHeadObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
@@ -237,7 +237,7 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
@@ -259,7 +259,7 @@ func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps co
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	uploadID, err := newUploadID()
@@ -293,7 +293,7 @@ func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Depend
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	uploadID := r.URL.Query().Get("uploadId")
@@ -330,7 +330,7 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 		return
 	}
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	uploadID := r.URL.Query().Get("uploadId")
@@ -344,12 +344,17 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 		return
 	}
 	var payload struct {
-		Parts []struct {
+		XMLName xml.Name `xml:"CompleteMultipartUpload"`
+		Parts   []struct {
 			PartNumber int    `xml:"PartNumber"`
 			ETag       string `xml:"ETag"`
 		} `xml:"Part"`
 	}
 	if err := xml.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if payload.XMLName.Local != "CompleteMultipartUpload" {
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
@@ -368,8 +373,13 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 	}
 	ordered := make([]core.MultipartPart, 0, len(payload.Parts))
 	seen := make(map[int]struct{}, len(payload.Parts))
+	prevPartNumber := 0
 	for _, reqPart := range payload.Parts {
 		if reqPart.PartNumber <= 0 {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		if reqPart.PartNumber <= prevPartNumber {
 			writeError(w, core.ErrInvalidArgument)
 			return
 		}
@@ -378,6 +388,7 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 			return
 		}
 		seen[reqPart.PartNumber] = struct{}{}
+		prevPartNumber = reqPart.PartNumber
 		stored, ok := partByNumber[reqPart.PartNumber]
 		if !ok {
 			writeError(w, core.ErrInvalidArgument)
@@ -447,7 +458,7 @@ func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps com
 
 func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
 	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+		writeBucketError(w, err)
 		return
 	}
 	maxKeys, err := parseMaxKeys(r)
@@ -573,6 +584,14 @@ func writeXML(w http.ResponseWriter, status int, payload any) {
 func writeError(w http.ResponseWriter, err error) {
 	status, code, message := s3ErrorDetails(err)
 	writeS3Error(w, status, code, message)
+}
+
+func writeBucketError(w http.ResponseWriter, err error) {
+	if err == core.ErrNotFound {
+		writeS3Error(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.")
+		return
+	}
+	writeError(w, err)
 }
 
 func writeS3Error(w http.ResponseWriter, status int, code, message string) {

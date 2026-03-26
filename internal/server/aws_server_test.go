@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	"gopkg.in/yaml.v3"
 
 	"github.com/snithish/mockbucket/internal/config"
@@ -50,6 +52,26 @@ func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 	if _, err := sessionClient.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String("demo")}); err != nil {
 		t.Fatalf("HeadBucket() with session error = %v", err)
 	}
+}
+
+func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer func() { _ = runtime.Close() }()
+
+	s3Client := newS3Client(t, runtime, "admin", "admin-secret", "")
+	ctx := context.Background()
+
+	_, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("missing-bucket"),
+		Key:    aws.String("object.txt"),
+	})
+	assertAWSAPIErrorCode(t, err, "NoSuchBucket")
+
+	_, err = s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("missing-object.txt"),
+	})
+	assertAWSAPIErrorCode(t, err, "NoSuchKey")
 }
 
 type s3ContractClient struct {
@@ -219,6 +241,20 @@ func newAWSConfig(t *testing.T, accessKeyID, secretKey, sessionToken string) aws
 		t.Fatalf("LoadDefaultConfig() error = %v", err)
 	}
 	return cfg
+}
+
+func assertAWSAPIErrorCode(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want %s", wantCode)
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error type = %T, want smithy.APIError", err)
+	}
+	if got := apiErr.ErrorCode(); got != wantCode {
+		t.Fatalf("error code = %q, want %q", got, wantCode)
+	}
 }
 
 const awsSTSTestSeedYAML = `buckets:

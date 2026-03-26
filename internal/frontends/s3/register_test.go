@@ -132,6 +132,129 @@ func TestWriteErrorUsesS3XMLEnvelope(t *testing.T) {
 	}
 }
 
+func TestGetObjectMissingBucketReturnsNoSuchBucket(t *testing.T) {
+	deps := common.Dependencies{
+		Metadata: &failingMetadataStore{bucketErr: core.ErrNotFound},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/missing/file.txt", nil)
+	req.SetPathValue("bucket", "missing")
+	req.SetPathValue("key", "file.txt")
+	rec := httptest.NewRecorder()
+
+	handleGetObject(rec, req, deps, "missing", "file.txt")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>NoSuchBucket</Code>") {
+		t.Fatalf("expected NoSuchBucket XML error, got %q", rec.Body.String())
+	}
+}
+
+func TestGetObjectMissingKeyReturnsNoSuchKey(t *testing.T) {
+	deps := common.Dependencies{
+		Metadata: &failingMetadataStore{bucket: "demo"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/demo/missing.txt", nil)
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "missing.txt")
+	rec := httptest.NewRecorder()
+
+	handleGetObject(rec, req, deps, "demo", "missing.txt")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>NoSuchKey</Code>") {
+		t.Fatalf("expected NoSuchKey XML error, got %q", rec.Body.String())
+	}
+}
+
+func TestCompleteMultipartRejectsMalformedPayload(t *testing.T) {
+	meta := &multipartMetadataStore{
+		bucket:   "demo",
+		uploadID: "upload-1",
+	}
+	deps := common.Dependencies{Metadata: meta}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/demo/object.txt?uploadId=upload-1",
+		strings.NewReader("<CompleteMultipartUpload"),
+	)
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "object.txt")
+	rec := httptest.NewRecorder()
+
+	handleCompleteMultipartUpload(rec, req, deps, "demo", "object.txt")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>InvalidArgument</Code>") {
+		t.Fatalf("expected InvalidArgument XML error, got %q", rec.Body.String())
+	}
+}
+
+func TestCompleteMultipartRejectsOutOfOrderParts(t *testing.T) {
+	meta := &multipartMetadataStore{
+		bucket:   "demo",
+		uploadID: "upload-1",
+		parts: []core.MultipartPart{
+			{UploadID: "upload-1", PartNumber: 1, ETag: "etag-1"},
+			{UploadID: "upload-1", PartNumber: 2, ETag: "etag-2"},
+		},
+	}
+	deps := common.Dependencies{Metadata: meta}
+	body := `<CompleteMultipartUpload>
+  <Part><PartNumber>2</PartNumber><ETag>"etag-2"</ETag></Part>
+  <Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part>
+</CompleteMultipartUpload>`
+
+	req := httptest.NewRequest(http.MethodPost, "/demo/object.txt?uploadId=upload-1", strings.NewReader(body))
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "object.txt")
+	rec := httptest.NewRecorder()
+
+	handleCompleteMultipartUpload(rec, req, deps, "demo", "object.txt")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>InvalidArgument</Code>") {
+		t.Fatalf("expected InvalidArgument XML error, got %q", rec.Body.String())
+	}
+}
+
+func TestCompleteMultipartRejectsDuplicatePartNumbers(t *testing.T) {
+	meta := &multipartMetadataStore{
+		bucket:   "demo",
+		uploadID: "upload-1",
+		parts: []core.MultipartPart{
+			{UploadID: "upload-1", PartNumber: 1, ETag: "etag-1"},
+		},
+	}
+	deps := common.Dependencies{Metadata: meta}
+	body := `<CompleteMultipartUpload>
+  <Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part>
+  <Part><PartNumber>1</PartNumber><ETag>"etag-1"</ETag></Part>
+</CompleteMultipartUpload>`
+
+	req := httptest.NewRequest(http.MethodPost, "/demo/object.txt?uploadId=upload-1", strings.NewReader(body))
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "object.txt")
+	rec := httptest.NewRecorder()
+
+	handleCompleteMultipartUpload(rec, req, deps, "demo", "object.txt")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<Code>InvalidArgument</Code>") {
+		t.Fatalf("expected InvalidArgument XML error, got %q", rec.Body.String())
+	}
+}
+
 func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -190,6 +313,7 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 
 type failingMetadataStore struct {
 	bucket    string
+	bucketErr error
 	putErr    error
 	deleteErr error
 }
@@ -198,6 +322,9 @@ func (m *failingMetadataStore) Ping(context.Context) error                 { ret
 func (m *failingMetadataStore) EnsureBucket(context.Context, string) error { return nil }
 func (m *failingMetadataStore) CreateBucket(context.Context, string) error { return nil }
 func (m *failingMetadataStore) GetBucket(context.Context, string) (core.Bucket, error) {
+	if m.bucketErr != nil {
+		return core.Bucket{}, m.bucketErr
+	}
 	return core.Bucket{Name: m.bucket}, nil
 }
 func (m *failingMetadataStore) ListBuckets(context.Context) ([]core.Bucket, error) { return nil, nil }
