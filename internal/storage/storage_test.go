@@ -335,6 +335,108 @@ func TestOpenSQLiteDropsRedundantIndexes(t *testing.T) {
 	}
 }
 
+func TestOpenSQLiteMigratesServiceAccountsToUniqueEmails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mockbucket.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE service_accounts (
+			token TEXT PRIMARY KEY,
+			client_email TEXT NOT NULL,
+			principal_name TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create legacy service_accounts error = %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO service_accounts(token, client_email, principal_name, created_at)
+		VALUES
+			('old-token', 'dup@mock.iam.gserviceaccount.com', 'old-principal', '2020-01-01T00:00:00Z'),
+			('new-token', 'dup@mock.iam.gserviceaccount.com', 'new-principal', '2021-01-01T00:00:00Z')`); err != nil {
+		_ = db.Close()
+		t.Fatalf("insert duplicate service accounts error = %v", err)
+	}
+	_ = db.Close()
+
+	metadata, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	sa, err := metadata.FindServiceAccountByEmail(context.Background(), "dup@mock.iam.gserviceaccount.com")
+	if err != nil {
+		t.Fatalf("FindServiceAccountByEmail() error = %v", err)
+	}
+	if got, want := sa.Token, "new-token"; got != want {
+		t.Fatalf("token = %q, want %q", got, want)
+	}
+	if got, want := sa.Principal, "new-principal"; got != want {
+		t.Fatalf("principal = %q, want %q", got, want)
+	}
+
+	var count int
+	if err := metadata.db.QueryRow(`SELECT COUNT(*) FROM service_accounts WHERE client_email = ?`, "dup@mock.iam.gserviceaccount.com").Scan(&count); err != nil {
+		t.Fatalf("duplicate count query error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("service_accounts rows for duplicate email = %d, want 1", count)
+	}
+
+	var unique int
+	if err := metadata.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'index'
+		  AND name = 'idx_service_accounts_client_email'
+		  AND sql LIKE '%UNIQUE INDEX%'`).Scan(&unique); err != nil {
+		t.Fatalf("index lookup error = %v", err)
+	}
+	if unique != 1 {
+		t.Fatal("unique service_accounts client_email index missing")
+	}
+}
+
+func TestUpsertServiceAccountUsesClientEmailUniqueness(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	first := core.ServiceAccount{
+		Token:       "first-token",
+		ClientEmail: "sa@mock.iam.gserviceaccount.com",
+		Principal:   "first-principal",
+	}
+	second := core.ServiceAccount{
+		Token:       "second-token",
+		ClientEmail: "sa@mock.iam.gserviceaccount.com",
+		Principal:   "second-principal",
+	}
+	if err := metadata.UpsertServiceAccount(ctx, first); err != nil {
+		t.Fatalf("UpsertServiceAccount(first) error = %v", err)
+	}
+	if err := metadata.UpsertServiceAccount(ctx, second); err != nil {
+		t.Fatalf("UpsertServiceAccount(second) error = %v", err)
+	}
+
+	sa, err := metadata.FindServiceAccountByEmail(ctx, first.ClientEmail)
+	if err != nil {
+		t.Fatalf("FindServiceAccountByEmail() error = %v", err)
+	}
+	if got, want := sa.Token, second.Token; got != want {
+		t.Fatalf("token = %q, want %q", got, want)
+	}
+	if got, want := sa.Principal, second.Principal; got != want {
+		t.Fatalf("principal = %q, want %q", got, want)
+	}
+}
+
 func TestDeleteBucketRemovesEmptyBucket(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
