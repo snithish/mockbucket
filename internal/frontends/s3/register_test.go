@@ -321,6 +321,7 @@ type failingMetadataStore struct {
 func (m *failingMetadataStore) Ping(context.Context) error                 { return nil }
 func (m *failingMetadataStore) EnsureBucket(context.Context, string) error { return nil }
 func (m *failingMetadataStore) CreateBucket(context.Context, string) error { return nil }
+func (m *failingMetadataStore) DeleteBucket(context.Context, string) error { return nil }
 func (m *failingMetadataStore) GetBucket(context.Context, string) (core.Bucket, error) {
 	if m.bucketErr != nil {
 		return core.Bucket{}, m.bucketErr
@@ -391,6 +392,7 @@ type multipartMetadataStore struct {
 func (m *multipartMetadataStore) Ping(context.Context) error                 { return nil }
 func (m *multipartMetadataStore) EnsureBucket(context.Context, string) error { return nil }
 func (m *multipartMetadataStore) CreateBucket(context.Context, string) error { return nil }
+func (m *multipartMetadataStore) DeleteBucket(context.Context, string) error { return nil }
 func (m *multipartMetadataStore) GetBucket(context.Context, string) (core.Bucket, error) {
 	return core.Bucket{Name: m.bucket}, nil
 }

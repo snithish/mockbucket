@@ -10,12 +10,13 @@ import (
 
 	azauth "github.com/snithish/mockbucket/internal/auth/azure"
 	"github.com/snithish/mockbucket/internal/core"
+	"github.com/snithish/mockbucket/internal/frontends/azure_shared"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 )
 
-func registerBlobHandlers(mux *http.ServeMux, deps common.Dependencies, resolver azauth.Authenticator) {
+func registerBlobHandlers(mux *http.ServeMux, deps common.Dependencies) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("x-ms-version", "2021-06-08")
+		azure_shared.SetVersionHeader(w)
 
 		if r.URL.Path == "/" && r.Method == http.MethodGet {
 			handleListContainers(w, r, deps)
@@ -39,9 +40,7 @@ func registerBlobHandlers(mux *http.ServeMux, deps common.Dependencies, resolver
 
 		if blobPath == "" {
 			switch {
-			case r.Method == http.MethodHead && restype == "container":
-				handleGetContainerProperties(w, r, deps, container)
-			case r.Method == http.MethodHead:
+			case r.Method == http.MethodHead && (restype == "container" || restype == ""):
 				handleGetContainerProperties(w, r, deps, container)
 			case r.Method == http.MethodPut && restype == "container":
 				handleCreateContainer(w, r, deps, container)
@@ -92,7 +91,7 @@ type ContainerItem struct {
 }
 
 func handleListContainers(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	containers, err := deps.Metadata.ListBuckets(r.Context())
+	containers, err := azure_shared.ListBuckets(r.Context(), deps)
 	if err != nil {
 		writeBlobError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -125,7 +124,7 @@ func handleListContainers(w http.ResponseWriter, r *http.Request, deps common.De
 }
 
 func handleCreateContainer(w http.ResponseWriter, r *http.Request, deps common.Dependencies, container string) {
-	if err := deps.Metadata.CreateBucket(r.Context(), container); err != nil {
+	if err := azure_shared.CreateBucket(r.Context(), deps, container); err != nil {
 		if err == core.ErrConflict {
 			writeBlobError(w, http.StatusConflict, "ContainerAlreadyExists", "The specified container already exists.")
 			return
@@ -140,7 +139,7 @@ func handleCreateContainer(w http.ResponseWriter, r *http.Request, deps common.D
 }
 
 func handleGetContainerProperties(w http.ResponseWriter, r *http.Request, deps common.Dependencies, container string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), container)
+	_, err := azure_shared.GetBucket(r.Context(), deps, container)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeBlobError(w, http.StatusNotFound, "ContainerNotFound", "The specified container does not exist.")
@@ -159,17 +158,18 @@ func handleGetContainerProperties(w http.ResponseWriter, r *http.Request, deps c
 }
 
 func handleDeleteContainer(w http.ResponseWriter, r *http.Request, deps common.Dependencies, container string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), container)
-	if err != nil {
+	if err := azure_shared.DeleteBucket(r.Context(), deps, container); err != nil {
 		if err == core.ErrNotFound {
 			writeBlobError(w, http.StatusNotFound, "ContainerNotFound", "The specified container does not exist.")
+			return
+		}
+		if err == core.ErrConflict {
+			writeBlobError(w, http.StatusConflict, "ContainerNotEmpty", "The specified container is not empty.")
 			return
 		}
 		writeBlobError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-
-	_ = deps.Metadata.DeleteObject(r.Context(), container, "")
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -199,7 +199,7 @@ type BlobItem struct {
 }
 
 func handleListBlobs(w http.ResponseWriter, r *http.Request, deps common.Dependencies, container string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), container)
+	_, err := azure_shared.GetBucket(r.Context(), deps, container)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeBlobError(w, http.StatusNotFound, "ContainerNotFound", "The specified container does not exist.")
@@ -289,7 +289,7 @@ func handlePutBlob(w http.ResponseWriter, r *http.Request, deps common.Dependenc
 	containerName := container
 	key := blobPath
 
-	_, err := deps.Metadata.GetBucket(r.Context(), containerName)
+	_, err := azure_shared.GetBucket(r.Context(), deps, containerName)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeBlobError(w, http.StatusNotFound, "ContainerNotFound", "The specified container does not exist.")
@@ -396,25 +396,11 @@ func handleDeleteBlob(w http.ResponseWriter, r *http.Request, deps common.Depend
 }
 
 func writeXML(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(status)
-	raw, _ := xml.MarshalIndent(payload, "", "  ")
-	_, _ = w.Write([]byte(xml.Header + string(raw)))
-}
-
-type BlobError struct {
-	XMLName xml.Name `xml:"Error"`
-	Code    string   `xml:"Code"`
-	Message string   `xml:"Message"`
+	azure_shared.WriteXML(w, status, payload)
 }
 
 func writeBlobError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/xml")
-	w.Header().Set("x-ms-error-code", code)
-	w.WriteHeader(status)
-	resp := BlobError{Code: code, Message: message}
-	raw, _ := xml.MarshalIndent(resp, "", "  ")
-	_, _ = w.Write([]byte(xml.Header + string(raw)))
+	azure_shared.WriteBlobError(w, status, code, message)
 }
 
 func parseMaxResults(s string) int {

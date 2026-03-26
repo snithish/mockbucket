@@ -152,6 +152,17 @@ func TestAzureDataLakeFrontendContract(t *testing.T) {
 			t.Fatalf("FlushData() error = %v", err)
 		}
 
+		moreData := []byte("!!!")
+		moreReader := &noopReadSeekCloser{Reader: strings.NewReader(string(moreData))}
+		_, err = fileClient.AppendData(ctx, int64(len(data)), moreReader, nil)
+		if err != nil {
+			t.Fatalf("AppendData(second) error = %v", err)
+		}
+		_, err = fileClient.FlushData(ctx, int64(len(data)+len(moreData)), nil)
+		if err != nil {
+			t.Fatalf("FlushData(second) error = %v", err)
+		}
+
 		// Read file
 		resp, err := fileClient.DownloadStream(ctx, nil)
 		if err != nil {
@@ -161,8 +172,8 @@ func TestAzureDataLakeFrontendContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadAll() error = %v", err)
 		}
-		if string(body) != "hello world" {
-			t.Fatalf("body = %q, want %q", string(body), "hello world")
+		if string(body) != "hello world!!!" {
+			t.Fatalf("body = %q, want %q", string(body), "hello world!!!")
 		}
 
 		// Delete file

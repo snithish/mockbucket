@@ -6,88 +6,89 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	azauth "github.com/snithish/mockbucket/internal/auth/azure"
 	"github.com/snithish/mockbucket/internal/core"
+	"github.com/snithish/mockbucket/internal/frontends/azure_shared"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 )
 
-func registerDFSHandlers(mux *http.ServeMux, deps common.Dependencies, resolver azauth.Authenticator, accountNames map[string]struct{}) {
+func registerDFSHandlers(mux *http.ServeMux, deps common.Dependencies, accountNames map[string]struct{}) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("x-ms-version", "2021-06-08")
+		azure_shared.SetVersionHeader(w)
 
 		resource := r.URL.Query().Get("resource")
 		restype := r.URL.Query().Get("restype")
 		comp := r.URL.Query().Get("comp")
 		action := r.URL.Query().Get("action")
-
-		// Python SDK sends paths like /{account}/{filesystem}/{filePath}.
-		// Strip the account prefix when present so fs/filePath are correct.
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		pathParts := strings.SplitN(path, "/", 3)
-		if len(pathParts) >= 3 {
-			if _, ok := accountNames[pathParts[0]]; ok {
-				pathParts = []string{pathParts[1], pathParts[2]}
-			}
-		}
-		fs := ""
-		if len(pathParts) > 0 {
-			fs = pathParts[0]
-		}
-		var filePath string
-		if len(pathParts) > 1 {
-			filePath = pathParts[1]
-		}
+		fs, filePath := parseFilesystemPath(r.URL.Path, accountNames)
 
 		switch {
 		// Blob-style operations (used by Go DataLake SDK)
 		case r.Method == http.MethodGet && comp == "list":
 			handleListFilesystemsXML(w, r, deps)
-		case r.Method == http.MethodPut && restype == "container":
+			return
+		case r.Method == http.MethodPut && restype == "container" && fs != "":
 			handleCreateFilesystemXML(w, r, deps, fs)
-		case r.Method == http.MethodHead && restype == "container":
+			return
+		case r.Method == http.MethodHead && restype == "container" && fs != "":
 			handleGetFilesystemProperties(w, r, deps, fs)
-		case r.Method == http.MethodGet && restype == "container":
+			return
+		case r.Method == http.MethodGet && restype == "container" && fs != "":
 			handleGetFilesystemProperties(w, r, deps, fs)
+			return
 
 		// DFS-style operations
 		case r.Method == http.MethodGet && resource == "account":
 			handleListFilesystems(w, r, deps)
-		case r.Method == http.MethodPut && resource == "filesystem":
+			return
+		case r.Method == http.MethodPut && resource == "filesystem" && fs != "":
 			handleCreateFilesystem(w, r, deps, fs)
+			return
 
 		// Delete filesystem
 		case r.Method == http.MethodDelete && fs != "" && filePath == "":
 			handleDeleteFilesystem(w, r, deps, fs)
+			return
+		}
 
-		// DFS file operations
-		case r.Method == http.MethodGet && fs != "" && filePath == "" && resource != "account":
-			// List paths (DFS)
-			handleListPath(w, r, deps, fs, "")
-		case r.Method == http.MethodPut && resource == "file":
-			handleCreateFile(w, r, deps, fs, filePath)
-		case r.Method == http.MethodPut && resource == "directory":
-			handleCreateDirectory(w, r, deps, fs, filePath)
-		case r.Method == http.MethodPatch && action == "append":
-			handleAppendData(w, r, deps, fs, filePath)
-		case r.Method == http.MethodPatch && action == "flush":
-			handleFlushData(w, r, deps, fs, filePath)
-		case r.Method == http.MethodGet && filePath != "":
-			handleReadFile(w, r, deps, fs, filePath)
-		case r.Method == http.MethodHead && filePath != "":
-			handleGetPathProperties(w, r, deps, fs, filePath)
-		case r.Method == http.MethodDelete && filePath != "":
-			handleDeletePath(w, r, deps, fs, filePath)
-		default:
-			if fs != "" && filePath != "" {
-				handleDfsPath(w, r, deps, fs, filePath)
+		if fs == "" {
+			writeDFSError(w, http.StatusNotImplemented, "UnsupportedOperation", "The specified operation is not implemented.")
+			return
+		}
+
+		if filePath == "" {
+			if r.Method == http.MethodGet && resource != "account" {
+				// List paths (DFS)
+				handleListPath(w, r, deps, fs, "")
 				return
 			}
 			writeDFSError(w, http.StatusNotImplemented, "UnsupportedOperation", "The specified operation is not implemented.")
+			return
 		}
+
+		handleDfsPath(w, r, deps, fs, filePath, resource, action)
 	})
+}
+
+func parseFilesystemPath(path string, accountNames map[string]struct{}) (string, string) {
+	path = strings.TrimPrefix(path, "/")
+	pathParts := strings.SplitN(path, "/", 3)
+	if len(pathParts) >= 3 {
+		if _, ok := accountNames[pathParts[0]]; ok {
+			pathParts = []string{pathParts[1], pathParts[2]}
+		}
+	}
+	if len(pathParts) == 0 || pathParts[0] == "" {
+		return "", ""
+	}
+	if len(pathParts) == 1 {
+		return pathParts[0], ""
+	}
+	return pathParts[0], pathParts[1]
 }
 
 type ListFilesystemsXML struct {
@@ -103,7 +104,7 @@ type XMLFilesystem struct {
 }
 
 func handleListFilesystemsXML(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	containers, err := deps.Metadata.ListBuckets(r.Context())
+	containers, err := azure_shared.ListBuckets(r.Context(), deps)
 	if err != nil {
 		writeBlobError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -131,7 +132,7 @@ func handleListFilesystemsXML(w http.ResponseWriter, r *http.Request, deps commo
 }
 
 func handleCreateFilesystemXML(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs string) {
-	if err := deps.Metadata.CreateBucket(r.Context(), fs); err != nil {
+	if err := azure_shared.CreateBucket(r.Context(), deps, fs); err != nil {
 		if err == core.ErrConflict {
 			writeBlobError(w, http.StatusConflict, "ContainerAlreadyExists", "The specified container already exists.")
 			return
@@ -146,14 +147,7 @@ func handleCreateFilesystemXML(w http.ResponseWriter, r *http.Request, deps comm
 }
 
 func writeBlobError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(status)
-	resp := struct {
-		XMLName xml.Name `xml:"Error"`
-		Code    string   `xml:"Code"`
-		Message string   `xml:"Message"`
-	}{Code: code, Message: message}
-	_ = xml.NewEncoder(w).Encode(resp)
+	azure_shared.WriteBlobError(w, status, code, message)
 }
 
 type FilesystemList struct {
@@ -171,7 +165,7 @@ type Properties struct {
 }
 
 func handleListFilesystems(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	containers, err := deps.Metadata.ListBuckets(r.Context())
+	containers, err := azure_shared.ListBuckets(r.Context(), deps)
 	if err != nil {
 		writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -195,7 +189,7 @@ func handleListFilesystems(w http.ResponseWriter, r *http.Request, deps common.D
 }
 
 func handleCreateFilesystem(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs string) {
-	if err := deps.Metadata.CreateBucket(r.Context(), fs); err != nil {
+	if err := azure_shared.CreateBucket(r.Context(), deps, fs); err != nil {
 		if err == core.ErrConflict {
 			writeDFSError(w, http.StatusConflict, "FilesystemAlreadyExists", "The specified filesystem already exists.")
 			return
@@ -211,22 +205,23 @@ func handleCreateFilesystem(w http.ResponseWriter, r *http.Request, deps common.
 }
 
 func handleDeleteFilesystem(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
-	if err != nil {
+	if err := azure_shared.DeleteBucket(r.Context(), deps, fs); err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
+			return
+		}
+		if err == core.ErrConflict {
+			writeDFSError(w, http.StatusConflict, "FilesystemNotEmpty", "The specified filesystem is not empty.")
 			return
 		}
 		writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-
-	_ = deps.Metadata.DeleteObject(r.Context(), fs, "")
 	w.WriteHeader(http.StatusAccepted)
 }
 
 func handleGetFilesystemProperties(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
+	_, err := azure_shared.GetBucket(r.Context(), deps, fs)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
@@ -241,10 +236,7 @@ func handleGetFilesystemProperties(w http.ResponseWriter, r *http.Request, deps 
 	w.WriteHeader(http.StatusOK)
 }
 
-func handleDfsPath(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, filePath string) {
-	resource := r.URL.Query().Get("resource")
-	action := r.URL.Query().Get("action")
-
+func handleDfsPath(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, filePath, resource, action string) {
 	switch {
 	case r.Method == http.MethodPut && resource == "file":
 		handleCreateFile(w, r, deps, fs, filePath)
@@ -254,21 +246,21 @@ func handleDfsPath(w http.ResponseWriter, r *http.Request, deps common.Dependenc
 		handleAppendData(w, r, deps, fs, filePath)
 	case r.Method == http.MethodPatch && action == "flush":
 		handleFlushData(w, r, deps, fs, filePath)
+	case r.Method == http.MethodGet && r.URL.Query().Get("recursive") != "":
+		handleListPath(w, r, deps, fs, filePath)
 	case r.Method == http.MethodGet:
 		handleReadFile(w, r, deps, fs, filePath)
 	case r.Method == http.MethodHead:
 		handleGetPathProperties(w, r, deps, fs, filePath)
 	case r.Method == http.MethodDelete:
 		handleDeletePath(w, r, deps, fs, filePath)
-	case r.Method == http.MethodGet && r.URL.Query().Get("recursive") != "":
-		handleListPath(w, r, deps, fs, filePath)
 	default:
 		writeDFSError(w, http.StatusNotImplemented, "UnsupportedOperation", "The specified operation is not implemented.")
 	}
 }
 
 func handleCreateFile(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, filePath string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
+	_, err := azure_shared.GetBucket(r.Context(), deps, fs)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
@@ -298,7 +290,7 @@ func handleCreateFile(w http.ResponseWriter, r *http.Request, deps common.Depend
 }
 
 func handleCreateDirectory(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, dirPath string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
+	_, err := azure_shared.GetBucket(r.Context(), deps, fs)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
@@ -330,31 +322,46 @@ func handleCreateDirectory(w http.ResponseWriter, r *http.Request, deps common.D
 }
 
 func handleAppendData(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, filePath string) {
-	// Read the appended data from the request body
-	// and store it immediately for simplicity
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
+	if _, err := azure_shared.GetBucket(r.Context(), deps, fs); err != nil {
+		if err == core.ErrNotFound {
+			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
+			return
+		}
 		writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
 
-	// Get existing data if any
-	existing, _, err := deps.Objects.OpenObject(r.Context(), fs, filePath)
-	var combined []byte
-	if err == nil {
-		existingData, err := io.ReadAll(existing)
-		existing.Close()
+	position, err := parsePosition(r.URL.Query().Get("position"))
+	if err != nil {
+		writeDFSError(w, http.StatusBadRequest, "InvalidQueryParameterValue", "The specified position is invalid.")
+		return
+	}
+
+	existingSize := int64(0)
+	var src io.Reader = r.Body
+	reader, _, openErr := deps.Objects.OpenObject(r.Context(), fs, filePath)
+	if openErr == nil {
+		defer func() { _ = reader.Close() }()
+		meta, err := deps.Metadata.GetObject(r.Context(), fs, filePath)
 		if err != nil {
 			writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
-		combined = append(existingData, data...)
-	} else {
-		combined = data
+		existingSize = meta.Size
+		if position != existingSize {
+			writeDFSError(w, http.StatusBadRequest, "InvalidFlushPosition", "The specified position is invalid.")
+			return
+		}
+		src = io.MultiReader(reader, r.Body)
+	} else if openErr != core.ErrNotFound {
+		writeDFSError(w, http.StatusInternalServerError, "InternalError", openErr.Error())
+		return
+	} else if position != 0 {
+		writeDFSError(w, http.StatusNotFound, "PathNotFound", "The specified path does not exist.")
+		return
 	}
 
-	// Write the combined data
-	meta, err := deps.Objects.PutObject(r.Context(), fs, filePath, strings.NewReader(string(combined)))
+	meta, err := deps.Objects.PutObject(r.Context(), fs, filePath, src)
 	if err != nil {
 		writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -368,12 +375,12 @@ func handleAppendData(w http.ResponseWriter, r *http.Request, deps common.Depend
 
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, meta.ETag))
 	w.Header().Set("Last-Modified", meta.ModifiedAt.Format(time.RFC1123))
-	w.Header().Set("AppendOffset", fmt.Sprintf("%d", int64(len(combined))-int64(len(data))))
+	w.Header().Set("AppendOffset", fmt.Sprintf("%d", existingSize))
 	w.WriteHeader(http.StatusAccepted)
 }
 
 func handleFlushData(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, filePath string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
+	_, err := azure_shared.GetBucket(r.Context(), deps, fs)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
@@ -383,12 +390,19 @@ func handleFlushData(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 
-	// For flush, we just update the metadata if needed
-	// The data was already written by append
+	position, err := parsePosition(r.URL.Query().Get("position"))
+	if err != nil {
+		writeDFSError(w, http.StatusBadRequest, "InvalidQueryParameterValue", "The specified position is invalid.")
+		return
+	}
+
 	obj, err := deps.Metadata.GetObject(r.Context(), fs, filePath)
 	if err != nil {
 		if err == core.ErrNotFound {
-			// File doesn't exist yet, create empty
+			if position != 0 {
+				writeDFSError(w, http.StatusNotFound, "PathNotFound", "The specified path does not exist.")
+				return
+			}
 			meta, err := deps.Objects.PutObject(r.Context(), fs, filePath, strings.NewReader(""))
 			if err != nil {
 				writeDFSError(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -493,7 +507,7 @@ type PathItem struct {
 }
 
 func handleListPath(w http.ResponseWriter, r *http.Request, deps common.Dependencies, fs, dirPath string) {
-	_, err := deps.Metadata.GetBucket(r.Context(), fs)
+	_, err := azure_shared.GetBucket(r.Context(), deps, fs)
 	if err != nil {
 		if err == core.ErrNotFound {
 			writeDFSError(w, http.StatusNotFound, "FilesystemNotFound", "The specified filesystem does not exist.")
@@ -556,14 +570,20 @@ type DFSError struct {
 }
 
 func writeDFSError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("x-ms-error-code", code)
-	resp := DFSErrorDetail{Code: code, Message: message}
-	raw, _ := xml.MarshalIndent(resp, "", "  ")
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(xml.Header + string(raw)))
+	azure_shared.WriteDataLakeError(w, status, code, message)
 }
 
 func writeDFSDatalakeError(w http.ResponseWriter, status int, code, message string) {
 	writeDFSError(w, status, code, message)
+}
+
+func parsePosition(raw string) (int64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	position, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || position < 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	return position, nil
 }

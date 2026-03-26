@@ -335,6 +335,53 @@ func TestOpenSQLiteDropsRedundantIndexes(t *testing.T) {
 	}
 }
 
+func TestDeleteBucketRemovesEmptyBucket(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+	if err := metadata.DeleteBucket(ctx, "demo"); err != nil {
+		t.Fatalf("DeleteBucket() error = %v", err)
+	}
+	if _, err := metadata.GetBucket(ctx, "demo"); err != core.ErrNotFound {
+		t.Fatalf("GetBucket() error = %v, want %v", err, core.ErrNotFound)
+	}
+}
+
+func TestDeleteBucketRejectsNonEmptyBucket(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, core.ObjectMetadata{
+		Bucket:     "demo",
+		Key:        "file.txt",
+		Path:       "/tmp/file.txt",
+		Size:       1,
+		ETag:       "etag",
+		CreatedAt:  time.Now().UTC(),
+		ModifiedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+
+	if err := metadata.DeleteBucket(ctx, "demo"); err != core.ErrConflict {
+		t.Fatalf("DeleteBucket() error = %v, want %v", err, core.ErrConflict)
+	}
+}
+
 type noopObjectStore struct{}
 
 func (noopObjectStore) PutObject(context.Context, string, string, ObjectSource) (core.ObjectMetadata, error) {

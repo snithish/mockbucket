@@ -210,6 +210,84 @@ func TestGetContainerPropertiesNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteContainerDeletesBucket(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	objects, err := storage.NewFilesystemObjectStore(dir + "/objects")
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+
+	meta, err := storage.OpenSQLite(dir + "/meta.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	t.Cleanup(func() { _ = meta.Close() })
+
+	if err := meta.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	deps := common.Dependencies{
+		Metadata: meta,
+		Objects:  objects,
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/demo?restype=container", nil)
+	rec := httptest.NewRecorder()
+
+	handleDeleteContainer(rec, req, deps, "demo")
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("handleDeleteContainer() status = %d, want 202", rec.Code)
+	}
+	if _, err := meta.GetBucket(ctx, "demo"); err != core.ErrNotFound {
+		t.Fatalf("GetBucket() error = %v, want %v", err, core.ErrNotFound)
+	}
+}
+
+func TestDeleteContainerNonEmptyReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	objects, err := storage.NewFilesystemObjectStore(dir + "/objects")
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+
+	meta, err := storage.OpenSQLite(dir + "/meta.db")
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	t.Cleanup(func() { _ = meta.Close() })
+
+	if err := meta.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+	objMeta, err := objects.PutObject(ctx, "demo", "file.txt", bytes.NewBufferString("hello"))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if err := meta.PutObject(ctx, objMeta); err != nil {
+		t.Fatalf("PutObject(metadata) error = %v", err)
+	}
+
+	deps := common.Dependencies{
+		Metadata: meta,
+		Objects:  objects,
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/demo?restype=container", nil)
+	rec := httptest.NewRecorder()
+
+	handleDeleteContainer(rec, req, deps, "demo")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("handleDeleteContainer() status = %d, want 409", rec.Code)
+	}
+}
+
 func TestPutAndGetBlob(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

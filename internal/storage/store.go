@@ -30,6 +30,7 @@ type HealthStore interface {
 type BucketMetadataStore interface {
 	EnsureBucket(ctx context.Context, name string) error
 	CreateBucket(ctx context.Context, name string) error
+	DeleteBucket(ctx context.Context, name string) error
 	GetBucket(ctx context.Context, name string) (core.Bucket, error)
 	ListBuckets(ctx context.Context) ([]core.Bucket, error)
 }
@@ -395,6 +396,10 @@ func (s *SQLiteStore) CreateBucket(ctx context.Context, name string) error {
 	return createBucket(ctx, s.db, name)
 }
 
+func (s *SQLiteStore) DeleteBucket(ctx context.Context, name string) error {
+	return deleteBucket(ctx, s.db, name)
+}
+
 func (s *SQLiteStore) GetBucket(ctx context.Context, name string) (core.Bucket, error) {
 	var bucket core.Bucket
 	row := s.db.QueryRowContext(ctx, `SELECT name, created_at FROM buckets WHERE name = ?`, name)
@@ -696,6 +701,42 @@ func createBucket(ctx context.Context, runner sqlRunner, name string) error {
 	affected, err := res.RowsAffected()
 	if err == nil && affected == 0 {
 		return core.ErrConflict
+	}
+	return nil
+}
+
+func deleteBucket(ctx context.Context, runner sqlRunner, name string) error {
+	var exists int
+	if err := runner.QueryRowContext(ctx, `SELECT 1 FROM buckets WHERE name = ?`, name).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return core.ErrNotFound
+		}
+		return err
+	}
+
+	var objectCount int
+	if err := runner.QueryRowContext(ctx, `SELECT COUNT(*) FROM objects WHERE bucket = ?`, name).Scan(&objectCount); err != nil {
+		return err
+	}
+	if objectCount > 0 {
+		return core.ErrConflict
+	}
+
+	var uploadCount int
+	if err := runner.QueryRowContext(ctx, `SELECT COUNT(*) FROM multipart_uploads WHERE bucket = ?`, name).Scan(&uploadCount); err != nil {
+		return err
+	}
+	if uploadCount > 0 {
+		return core.ErrConflict
+	}
+
+	res, err := runner.ExecContext(ctx, `DELETE FROM buckets WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err == nil && affected == 0 {
+		return core.ErrNotFound
 	}
 	return nil
 }

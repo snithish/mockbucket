@@ -1,55 +1,26 @@
 package azure_blob
 
 import (
-	"encoding/base64"
 	"net/http"
 
 	azauth "github.com/snithish/mockbucket/internal/auth/azure"
 	"github.com/snithish/mockbucket/internal/config"
+	"github.com/snithish/mockbucket/internal/frontends/azure_shared"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 )
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
-	var accounts []azauth.AccountConfig
-	if cfg.Azure.Account != "" {
-		keyBytes, err := base64.StdEncoding.DecodeString(cfg.Azure.Key)
-		if err != nil {
-			keyBytes = []byte(cfg.Azure.Key)
-		}
-		accounts = append(accounts, azauth.AccountConfig{
-			Name: cfg.Azure.Account,
-			Key:  keyBytes,
-		})
-	}
-	for _, acc := range cfg.Seed.Azure.Accounts {
-		keyBytes, err := base64.StdEncoding.DecodeString(acc.Key)
-		if err != nil {
-			keyBytes = []byte(acc.Key)
-		}
-		accounts = append(accounts, azauth.AccountConfig{
-			Name: acc.Name,
-			Key:  keyBytes,
-		})
-	}
-
-	resolver := azauth.NewAuthResolver(accounts)
+	resolver, _ := azure_shared.BuildAuthResolver(cfg)
 
 	blobMux := http.NewServeMux()
-	registerBlobHandlers(blobMux, deps, resolver)
+	registerBlobHandlers(blobMux, deps)
 	blobHandler := azauth.AuthenticateAnonymousOrSharedKey(resolver)(blobMux)
 
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if len(host) == 0 {
-			handleRoot(w, r, deps)
-			return
-		}
-		blobHandler.ServeHTTP(w, r)
-	}))
+	mux.Handle("/", blobHandler)
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	w.Header().Set("x-ms-version", "2021-06-08")
+	azure_shared.SetVersionHeader(w)
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	scheme := "http"
