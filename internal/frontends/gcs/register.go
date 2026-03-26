@@ -145,7 +145,7 @@ type listObjectsResponse struct {
 }
 
 func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	if !allowAuthenticatedSubject(r, "storage.buckets.list", gcsProjectResource()) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -179,8 +179,7 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := gcsProjectResource()
-	if !allowAuthenticatedSubject(r, "storage.buckets.create", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -198,8 +197,7 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := gcsBucketResource(bucket)
-	if !allowAuthenticatedSubject(r, "storage.buckets.get", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -218,8 +216,7 @@ func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	resource := gcsBucketResource(bucket)
-	if !allowAuthenticatedSubject(r, "storage.objects.list", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -287,8 +284,7 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := gcsObjectResource(bucket, key)
-	if !allowAuthenticatedSubject(r, "storage.objects.create", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -366,8 +362,7 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	resource := gcsObjectResource(bucket, key)
-	if !allowAuthenticatedSubject(r, "storage.objects.create", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -403,8 +398,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		http.NotFound(w, r)
 		return
 	}
-	resource := gcsObjectResource(bucket, key)
-	if !allowAuthenticatedSubject(r, "storage.objects.get", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -444,8 +438,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
-	resource := gcsObjectResource(bucket, key)
-	if !allowAuthenticatedSubject(r, "storage.objects.delete", resource) {
+	if !requireAuthenticatedSubject(r) {
 		writeError(w, core.ErrAccessDenied)
 		return
 	}
@@ -490,11 +483,7 @@ func decodePageToken(token string) (string, error) {
 	return string(raw), nil
 }
 
-// allowAuthenticatedSubject keeps action/resource labels for API compatibility,
-// but only authenticated-subject presence is currently enforced.
-func allowAuthenticatedSubject(r *http.Request, action, resource string) bool {
-	_ = action
-	_ = resource
+func requireAuthenticatedSubject(r *http.Request) bool {
 	return hasAuthenticatedSubject(r)
 }
 
@@ -518,18 +507,6 @@ func putObjectWithCRC32C(ctx context.Context, deps common.Dependencies, bucket, 
 	var buf [4]byte
 	binary.BigEndian.PutUint32(buf[:], hasher.Sum32())
 	return meta, base64.StdEncoding.EncodeToString(buf[:]), nil
-}
-
-func gcsProjectResource() string {
-	return "projects/_/buckets"
-}
-
-func gcsBucketResource(bucket string) string {
-	return "projects/_/buckets/" + bucket
-}
-
-func gcsObjectResource(bucket, key string) string {
-	return "projects/_/buckets/" + bucket + "/objects/" + key
 }
 
 func pathObject(r *http.Request) (string, error) {

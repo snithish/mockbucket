@@ -266,9 +266,8 @@ response instead of pretending parity with Azure cloud behavior.
   `allowed_roles` enforcement is the current model.
 - **No full IAM policy engine.** Action/resource authorization is intentionally
   minimal and frontend-specific.
-- **GCS action/resource labels are compatibility-only.** Handlers carry
-  `storage.*` action/resource names, but enforcement is currently
-  authenticated-subject presence only.
+- **GCS is authenticated-only.** Bearer/access token subject resolution is
+  required, but bucket/object authorization decisions are not evaluated.
 - **Azure SharedKey mode is account-aware, not signature-validating.** The
   account in `Authorization: SharedKey ...` must exist, but request signatures
   are not currently verified.
