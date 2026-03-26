@@ -17,6 +17,7 @@ type ServiceAccountJSON struct {
 	ClientID    string `json:"client_id"`
 	TokenURI    string `json:"token_uri"`
 	ProjectID   string `json:"project_id"`
+	Principal   string `json:"-"`
 }
 
 func GenerateServiceAccountJSON(host string, port int, clientEmail string) (ServiceAccountJSON, error) {

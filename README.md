@@ -336,6 +336,20 @@ gcs:
       principal: admin
 ```
 
+`GET /api/v1/gcs/service-account` returns generated JSON credentials and the
+same seeded `principal` used for runtime token resolution.
+
+### GCS Unsupported Features
+
+The GCS frontend intentionally excludes several cloud features. MockBucket does
+not currently implement:
+
+- IAM policy APIs and policy binding evaluation
+- Resumable uploads (`uploadType=resumable`)
+- Object generations and metagenerations
+- Preconditions (`ifGenerationMatch`, `ifMetagenerationMatch`, and variants)
+- Rich object metadata parity (beyond the small metadata subset returned today)
+
 ### Azure Accounts
 
 Define Azure storage accounts under `seed.azure.accounts`. Each entry requires a

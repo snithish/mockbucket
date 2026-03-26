@@ -64,6 +64,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 			if err != nil {
 				return nil, fmt.Errorf("generate service account for %s: %w", sc.ClientEmail, err)
 			}
+			sa.Principal = sc.Principal
 			gcsServiceAccounts = append(gcsServiceAccounts, sa)
 			if err := metadata.UpsertServiceAccount(ctx, core.ServiceAccount{
 				ClientEmail: sa.ClientEmail,

@@ -19,6 +19,7 @@ import (
 	"github.com/snithish/mockbucket/internal/config"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
+	"github.com/snithish/mockbucket/internal/seed"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -26,6 +27,44 @@ import (
 
 func TestGCSFrontendContract(t *testing.T) {
 	runFrontendContractTests(t, newGCSContractClient)
+}
+
+func TestGCSListBucketsRequiresAuthentication(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/storage/v1/b")
+	if err != nil {
+		t.Fatalf("GET /storage/v1/b error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestGCSListBucketsRejectsInvalidBearerToken(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/storage/v1/b", nil)
+	req.Header.Set("Authorization", "Bearer invalid")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /storage/v1/b error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
 }
 
 func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
@@ -141,6 +180,198 @@ func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
 	}
 	if tok.AccessToken == "" {
 		t.Fatal("access_token is empty")
+	}
+}
+
+func TestGCSTokenEndpointFailureModes(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	claims := `{"aud":"` + server.URL + `/oauth2/v4/token"}`
+	assertionNoIssuer := "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".fakesig"
+
+	tests := []struct {
+		name        string
+		method      string
+		body        string
+		contentType string
+		wantStatus  int
+		wantText    string
+	}{
+		{
+			name:       "method not allowed",
+			method:     http.MethodGet,
+			wantStatus: http.StatusMethodNotAllowed,
+			wantText:   "method not allowed",
+		},
+		{
+			name:        "unsupported grant type",
+			method:      http.MethodPost,
+			body:        "grant_type=password",
+			contentType: "application/x-www-form-urlencoded",
+			wantStatus:  http.StatusBadRequest,
+			wantText:    "unsupported grant_type",
+		},
+		{
+			name:        "client credentials missing client id",
+			method:      http.MethodPost,
+			body:        "grant_type=client_credentials",
+			contentType: "application/x-www-form-urlencoded",
+			wantStatus:  http.StatusBadRequest,
+			wantText:    "client_id is required",
+		},
+		{
+			name:        "jwt bearer missing iss and sub",
+			method:      http.MethodPost,
+			body:        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=" + url.QueryEscape(assertionNoIssuer),
+			contentType: "application/x-www-form-urlencoded",
+			wantStatus:  http.StatusBadRequest,
+			wantText:    "invalid assertion",
+		},
+		{
+			name:        "unknown client email",
+			method:      http.MethodPost,
+			body:        "grant_type=client_credentials&client_id=missing%40mock.iam.gserviceaccount.com",
+			contentType: "application/x-www-form-urlencoded",
+			wantStatus:  http.StatusUnauthorized,
+			wantText:    "invalid_client",
+		},
+	}
+
+	for _, tt := range tests {
+		req, _ := http.NewRequest(tt.method, server.URL+"/oauth2/v4/token", strings.NewReader(tt.body))
+		if tt.contentType != "" {
+			req.Header.Set("Content-Type", tt.contentType)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s request error = %v", tt.name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != tt.wantStatus {
+			t.Fatalf("%s status = %d, want %d, body=%s", tt.name, resp.StatusCode, tt.wantStatus, string(body))
+		}
+		if !strings.Contains(string(body), tt.wantText) {
+			t.Fatalf("%s body = %q, want to contain %q", tt.name, string(body), tt.wantText)
+		}
+	}
+}
+
+func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: "flow@mock.iam.gserviceaccount.com",
+		Principal:   "flow-user",
+		Token:       "gcs-flow-token",
+	}); err != nil {
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
+	}
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	createBucketReq, _ := http.NewRequest(http.MethodPost, server.URL+"/storage/v1/b", strings.NewReader(`{"name":"flow-bucket"}`))
+	createBucketReq.Header.Set("Authorization", "Bearer gcs-flow-token")
+	createBucketReq.Header.Set("Content-Type", "application/json")
+	createBucketResp, err := http.DefaultClient.Do(createBucketReq)
+	if err != nil {
+		t.Fatalf("create bucket request error = %v", err)
+	}
+	defer createBucketResp.Body.Close()
+	if createBucketResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(createBucketResp.Body)
+		t.Fatalf("create bucket status = %d, want 200, body=%s", createBucketResp.StatusCode, string(body))
+	}
+
+	uploadReq, _ := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/upload/storage/v1/b/flow-bucket/o?uploadType=media&name=hello.txt",
+		strings.NewReader("hello gcs"),
+	)
+	uploadReq.Header.Set("Authorization", "Bearer gcs-flow-token")
+	uploadResp, err := http.DefaultClient.Do(uploadReq)
+	if err != nil {
+		t.Fatalf("upload object request error = %v", err)
+	}
+	defer uploadResp.Body.Close()
+	if uploadResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(uploadResp.Body)
+		t.Fatalf("upload object status = %d, want 200, body=%s", uploadResp.StatusCode, string(body))
+	}
+
+	getBucketReq, _ := http.NewRequest(http.MethodGet, server.URL+"/storage/v1/b/flow-bucket", nil)
+	getBucketReq.Header.Set("Authorization", "Bearer gcs-flow-token")
+	getBucketResp, err := http.DefaultClient.Do(getBucketReq)
+	if err != nil {
+		t.Fatalf("get bucket request error = %v", err)
+	}
+	defer getBucketResp.Body.Close()
+	if getBucketResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(getBucketResp.Body)
+		t.Fatalf("get bucket status = %d, want 200, body=%s", getBucketResp.StatusCode, string(body))
+	}
+
+	getObjectReq, _ := http.NewRequest(http.MethodGet, server.URL+"/storage/v1/b/flow-bucket/o/hello.txt?alt=media", nil)
+	getObjectReq.Header.Set("Authorization", "Bearer gcs-flow-token")
+	getObjectResp, err := http.DefaultClient.Do(getObjectReq)
+	if err != nil {
+		t.Fatalf("get object request error = %v", err)
+	}
+	defer getObjectResp.Body.Close()
+	if getObjectResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(getObjectResp.Body)
+		t.Fatalf("get object status = %d, want 200, body=%s", getObjectResp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(getObjectResp.Body)
+	if got, want := string(body), "hello gcs"; got != want {
+		t.Fatalf("object body = %q, want %q", got, want)
+	}
+}
+
+func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+		cfg.Seed.GCS.ServiceCredentials = []seed.GCSServiceCredSeed{
+			{
+				ClientEmail: "svc-acct@mockbucket.iam.gserviceaccount.com",
+				Principal:   "custom-principal",
+			},
+		}
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/api/v1/gcs/service-account")
+	if err != nil {
+		t.Fatalf("GET /api/v1/gcs/service-account error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200, body=%s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		ServiceAccounts []struct {
+			ClientEmail string `json:"client_email"`
+			Principal   string `json:"principal"`
+		} `json:"service_accounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response error = %v", err)
+	}
+	if len(payload.ServiceAccounts) != 1 {
+		t.Fatalf("service accounts count = %d, want 1", len(payload.ServiceAccounts))
+	}
+	if got, want := payload.ServiceAccounts[0].Principal, "custom-principal"; got != want {
+		t.Fatalf("principal = %q, want %q", got, want)
 	}
 }
 

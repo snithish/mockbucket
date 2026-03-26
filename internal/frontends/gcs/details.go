@@ -17,9 +17,13 @@ func RegisterServiceAccountEndpoint(mux *http.ServeMux, accounts []seed.ServiceA
 
 	response := make([]map[string]any, 0, len(accounts))
 	for _, sa := range accounts {
+		principal := sa.Principal
+		if principal == "" {
+			principal = extractPrincipal(sa.ClientEmail)
+		}
 		response = append(response, map[string]any{
 			"client_email": sa.ClientEmail,
-			"principal":    extractPrincipal(sa.ClientEmail),
+			"principal":    principal,
 			"secret_json": map[string]any{
 				"type":         sa.Type,
 				"client_email": sa.ClientEmail,

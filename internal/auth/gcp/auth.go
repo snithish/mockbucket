@@ -46,6 +46,9 @@ func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 		default:
 			err = core.ErrUnauthenticated
 		}
+		if err == core.ErrNotFound {
+			err = core.ErrUnauthenticated
+		}
 		if err != nil {
 			http.Error(w, err.Error(), httpx.StatusCode(err))
 			return
