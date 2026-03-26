@@ -15,19 +15,16 @@ import (
 // Authenticator resolves GCP-style credentials into a core.Subject.
 type Authenticator interface {
 	ResolveBearerToken(ctx context.Context, token string) (core.Subject, error)
-	ResolveAccessKey(ctx context.Context, accessKeyID string) (core.Subject, error)
 }
 
 // Authenticate wraps next with GCS-style request authentication.
 // Accepted credential sources (checked in order):
 //  1. Authorization: Bearer <token>  — resolved as a session token
 //  2. access_token query parameter   — resolved as a session token
-//  3. X-Mockbucket-Access-Key header — resolved as an access key ID
 func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := strings.TrimSpace(r.Header.Get("Authorization"))
 		accessToken := strings.TrimSpace(r.URL.Query().Get("access_token"))
-		accessKey := strings.TrimSpace(r.Header.Get("X-Mockbucket-Access-Key"))
 
 		var (
 			subject core.Subject
@@ -39,8 +36,6 @@ func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 			subject, err = resolver.ResolveBearerToken(r.Context(), token)
 		case accessToken != "":
 			subject, err = resolver.ResolveBearerToken(r.Context(), accessToken)
-		case accessKey != "":
-			subject, err = resolver.ResolveAccessKey(r.Context(), accessKey)
 		case header != "":
 			err = core.ErrInvalidArgument
 		default:
