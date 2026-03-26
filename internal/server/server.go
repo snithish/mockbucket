@@ -47,12 +47,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	if err != nil {
 		return nil, err
 	}
-	doc := seedDocument(cfg.Seed)
-	if err := doc.Validate(); err != nil {
-		_ = metadata.Close()
-		return nil, fmt.Errorf("validate seed: %w", err)
-	}
-	if err := seed.Apply(ctx, doc, metadata, objects); err != nil {
+	if err := seed.Apply(ctx, cfg.Seed, metadata, objects); err != nil {
 		_ = metadata.Close()
 		return nil, fmt.Errorf("apply seed: %w", err)
 	}
@@ -186,66 +181,6 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(details)
 	})
-}
-
-func seedDocument(s config.SeedData) seed.Document {
-	doc := seed.Document{
-		Buckets: append([]string(nil), s.Buckets...),
-		Roles:   make([]seed.RoleSeed, 0, len(s.Roles)),
-		Objects: make([]seed.ObjectSeed, 0, len(s.Objects)),
-		S3: seed.S3SeedConfig{
-			AccessKeys: make([]seed.S3AccessKeySeed, 0, len(s.S3.AccessKeys)),
-		},
-		GCS: seed.GCSSeedConfig{
-			Tokens:             convertGCSConfigTokens(s.GCS.Tokens),
-			ServiceCredentials: make([]seed.GCSServiceCredSeed, 0, len(s.GCS.ServiceCredentials)),
-		},
-		Azure: seed.AzureSeedConfig{
-			Accounts: make([]seed.AzureAccountSeed, 0, len(s.Azure.Accounts)),
-		},
-	}
-	for _, r := range s.Roles {
-		doc.Roles = append(doc.Roles, seed.RoleSeed{Name: r.Name})
-	}
-	for _, o := range s.Objects {
-		doc.Objects = append(doc.Objects, seed.ObjectSeed{
-			Bucket:  o.Bucket,
-			Key:     o.Key,
-			Content: o.Content,
-		})
-	}
-	for _, k := range s.S3.AccessKeys {
-		doc.S3.AccessKeys = append(doc.S3.AccessKeys, seed.S3AccessKeySeed{
-			ID:           k.ID,
-			Secret:       k.Secret,
-			AllowedRoles: k.AllowedRoles,
-		})
-	}
-	for _, sc := range s.GCS.ServiceCredentials {
-		doc.GCS.ServiceCredentials = append(doc.GCS.ServiceCredentials, seed.GCSServiceCredSeed{
-			ClientEmail: sc.ClientEmail,
-			Principal:   sc.Principal,
-		})
-	}
-	for _, acc := range s.Azure.Accounts {
-		doc.Azure.Accounts = append(doc.Azure.Accounts, seed.AzureAccountSeed{
-			Name:      acc.Name,
-			Key:       acc.Key,
-			DNSSuffix: acc.DNSSuffix,
-		})
-	}
-	return doc
-}
-
-func convertGCSConfigTokens(tokens []config.GCSToken) []seed.GCSTokenSeed {
-	result := make([]seed.GCSTokenSeed, 0, len(tokens))
-	for _, t := range tokens {
-		result = append(result, seed.GCSTokenSeed{
-			Token:     t.Token,
-			Principal: t.Principal,
-		})
-	}
-	return result
 }
 
 func parseServerAddress(addr string) (string, int, error) {

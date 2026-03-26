@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/snithish/mockbucket/internal/seed"
 )
 
 func TestLoadResolvesRelativePaths(t *testing.T) {
@@ -55,5 +57,18 @@ func TestValidateFrontendType(t *testing.T) {
 		if (err != nil) != tt.wantErr {
 			t.Fatalf("%s: Validate() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 		}
+	}
+}
+
+func TestValidateRejectsInvalidSeed(t *testing.T) {
+	cfg := Default()
+	cfg.Frontends.Type = FrontendS3
+	cfg.Seed = seed.Document{
+		Objects: []seed.ObjectSeed{
+			{Bucket: "missing", Key: "orphan.txt", Content: "x"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want seed validation error")
 	}
 }

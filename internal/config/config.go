@@ -15,7 +15,7 @@ import (
 type Config struct {
 	Server    ServerConfig   `yaml:"server"`
 	Storage   StorageConfig  `yaml:"storage"`
-	Seed      SeedData       `yaml:"seed"`
+	Seed      seed.Document  `yaml:"seed"`
 	Frontends FrontendConfig `yaml:"frontends"`
 	Auth      AuthConfig     `yaml:"auth"`
 	Azure     AzureConfig    `yaml:"azure"`
@@ -30,50 +30,6 @@ type ServerConfig struct {
 type StorageConfig struct {
 	RootDir    string `yaml:"root_dir"`
 	SQLitePath string `yaml:"sqlite_path"`
-}
-
-type SeedData struct {
-	Buckets []string             `yaml:"buckets"`
-	Roles   []SeedRole           `yaml:"roles"`
-	Objects []SeedObject         `yaml:"objects"`
-	S3      SeedS3Config         `yaml:"s3"`
-	GCS     SeedGCSConfig        `yaml:"gcs"`
-	Azure   seed.AzureSeedConfig `yaml:"azure"`
-}
-
-type SeedRole struct {
-	Name string `yaml:"name"`
-}
-
-type SeedObject struct {
-	Bucket  string `yaml:"bucket"`
-	Key     string `yaml:"key"`
-	Content string `yaml:"content"`
-}
-
-type SeedS3Config struct {
-	AccessKeys []SeedS3AccessKey `yaml:"access_keys"`
-}
-
-type SeedS3AccessKey struct {
-	ID           string   `yaml:"id"`
-	Secret       string   `yaml:"secret"`
-	AllowedRoles []string `yaml:"allowed_roles"`
-}
-
-type SeedGCSConfig struct {
-	Tokens             []GCSToken                 `yaml:"tokens"`
-	ServiceCredentials []SeedGCSServiceCredential `yaml:"service_credentials"`
-}
-
-type SeedGCSServiceCredential struct {
-	ClientEmail string `yaml:"client_email"`
-	Principal   string `yaml:"principal"`
-}
-
-type GCSToken struct {
-	Token     string `yaml:"token"`
-	Principal string `yaml:"principal"`
 }
 
 type FrontendConfig struct {
@@ -170,6 +126,9 @@ func (c Config) Validate() error {
 		// valid
 	default:
 		problems = append(problems, "frontend.type must be one of: s3, gcs, azure_blob, azure_datalake")
+	}
+	if err := c.Seed.Validate(); err != nil {
+		problems = append(problems, fmt.Sprintf("seed: %v", err))
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
