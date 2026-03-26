@@ -6,7 +6,7 @@ import (
 )
 
 type Dependencies struct {
-	Metadata       storage.MetadataStore
+	Metadata       storage.FrontendMetadataStore
 	Objects        storage.ObjectStore
 	AuthResolver   iam.Resolver
 	SessionManager iam.SessionManager

@@ -11,8 +11,19 @@ import (
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
+type sessionStore interface {
+	storage.AccessKeyStore
+	storage.RoleStore
+	storage.SessionStateStore
+}
+
+type resolverStore interface {
+	storage.AccessKeyStore
+	storage.ServiceAccountLookupStore
+}
+
 type SessionManager struct {
-	Store           storage.MetadataStore
+	Store           sessionStore
 	DefaultDuration time.Duration
 }
 
@@ -103,7 +114,7 @@ func (m SessionManager) ResolveSession(ctx context.Context, token string) (core.
 }
 
 type Resolver struct {
-	Store          storage.MetadataStore
+	Store          resolverStore
 	SessionManager SessionManager
 }
 

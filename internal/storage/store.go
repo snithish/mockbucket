@@ -23,33 +23,60 @@ type ObjectStore interface {
 	AbortMultipartUpload(ctx context.Context, uploadID string) error
 }
 
-type MetadataStore interface {
+type HealthStore interface {
 	Ping(ctx context.Context) error
+}
+
+type BucketMetadataStore interface {
 	EnsureBucket(ctx context.Context, name string) error
 	CreateBucket(ctx context.Context, name string) error
 	GetBucket(ctx context.Context, name string) (core.Bucket, error)
 	ListBuckets(ctx context.Context) ([]core.Bucket, error)
+}
+
+type ObjectMetadataStore interface {
 	PutObject(ctx context.Context, meta core.ObjectMetadata) error
 	GetObject(ctx context.Context, bucket, key string) (core.ObjectMetadata, error)
 	DeleteObject(ctx context.Context, bucket, key string) error
 	ListObjects(ctx context.Context, bucket, prefix string, limit int, after string) ([]core.ObjectMetadata, error)
-	UpsertRole(ctx context.Context, role core.Role) error
-	FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, error)
-	GetRole(ctx context.Context, name string) (core.Role, error)
-	CreateSession(ctx context.Context, session core.Session) error
-	GetSession(ctx context.Context, token string) (core.Session, error)
-	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+}
+
+type MultipartMetadataStore interface {
 	CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error
 	GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error)
 	PutMultipartPart(ctx context.Context, part core.MultipartPart) error
 	ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error)
 	DeleteMultipartUpload(ctx context.Context, uploadID string) error
+}
+
+type FrontendMetadataStore interface {
+	BucketMetadataStore
+	ObjectMetadataStore
+	MultipartMetadataStore
+}
+
+type AccessKeyStore interface {
+	FindAccessKey(ctx context.Context, accessKeyID string) (core.AccessKey, error)
+}
+
+type RoleStore interface {
+	GetRole(ctx context.Context, name string) (core.Role, error)
+}
+
+type SessionStateStore interface {
+	CreateSession(ctx context.Context, session core.Session) error
+	GetSession(ctx context.Context, token string) (core.Session, error)
+}
+
+type ServiceAccountStore interface {
 	UpsertServiceAccount(ctx context.Context, sa core.ServiceAccount) error
-	FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, error)
-	FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error)
 	ListServiceAccounts(ctx context.Context) ([]core.ServiceAccount, error)
 	DeleteServiceAccounts(ctx context.Context) error
-	Close() error
+}
+
+type ServiceAccountLookupStore interface {
+	FindServiceAccountByToken(ctx context.Context, token string) (core.ServiceAccount, error)
+	FindServiceAccountByEmail(ctx context.Context, email string) (core.ServiceAccount, error)
 }
 
 type SQLiteStore struct {

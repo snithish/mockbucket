@@ -128,7 +128,7 @@ func (r *Runtime) Close() error {
 	return r.Metadata.Close()
 }
 
-func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.MetadataStore) {
+func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.HealthStore) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
