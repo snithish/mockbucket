@@ -11,7 +11,7 @@ import (
 func TestLoadResolvesRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mockbucket.yaml")
-	raw := []byte("frontends:\n  type: s3\nserver:\n  address: 127.0.0.1:9000\nstorage:\n  root_dir: ./objects\n  sqlite_path: ./mockbucket.db\nauth:\n  session_duration: 30m\n")
+	raw := []byte("frontends:\n  type: s3\nserver:\n  address: 127.0.0.1:9000\nstorage:\n  root_dir: ./objects\n  sqlite_path: ./mockbucket.db\n")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -30,7 +30,6 @@ func TestLoadResolvesRelativePaths(t *testing.T) {
 func TestValidateRejectsInvalidConfig(t *testing.T) {
 	cfg := Default()
 	cfg.Server.Address = ""
-	cfg.Auth.SessionDuration = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want validation error")
 	}

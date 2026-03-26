@@ -14,6 +14,7 @@ import (
 
 	"github.com/snithish/mockbucket/internal/config"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
+	"github.com/snithish/mockbucket/internal/seed"
 )
 
 func TestAzureFrontendContract(t *testing.T) {
@@ -167,7 +168,11 @@ func newAzureTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	return newTestRuntime(t, func(cfg *mbconfig.Config) {
 		cfg.Frontends.Type = config.FrontendAzureBlob
-		cfg.Azure.Account = "mockstorage"
-		cfg.Azure.Key = base64.StdEncoding.EncodeToString([]byte("mockstorage-key-32bytes!!"))
+		cfg.Seed.Azure.Accounts = []seed.AzureAccountSeed{
+			{
+				Name: "mockstorage",
+				Key:  base64.StdEncoding.EncodeToString([]byte("mockstorage-key-32bytes!!")),
+			},
+		}
 	})
 }

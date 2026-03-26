@@ -16,12 +16,6 @@ const APIVersion = "2021-06-08"
 
 func BuildAuthResolver(cfg config.Config) (azauth.Authenticator, map[string]struct{}) {
 	accountMap := map[string]azauth.AccountConfig{}
-	if cfg.Azure.Account != "" {
-		accountMap[cfg.Azure.Account] = azauth.AccountConfig{
-			Name: cfg.Azure.Account,
-			Key:  decodeAccountKey(cfg.Azure.Key),
-		}
-	}
 	for _, acc := range cfg.Seed.Azure.Accounts {
 		accountMap[acc.Name] = azauth.AccountConfig{
 			Name: acc.Name,

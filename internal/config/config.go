@@ -17,8 +17,6 @@ type Config struct {
 	Storage   StorageConfig  `yaml:"storage"`
 	Seed      seed.Document  `yaml:"seed"`
 	Frontends FrontendConfig `yaml:"frontends"`
-	Auth      AuthConfig     `yaml:"auth"`
-	Azure     AzureConfig    `yaml:"azure"`
 }
 
 type ServerConfig struct {
@@ -45,16 +43,6 @@ const (
 	FrontendAzureDataLake FrontendType = "azure_datalake"
 )
 
-type AzureConfig struct {
-	Account   string `yaml:"account"`
-	Key       string `yaml:"key"`
-	DNSSuffix string `yaml:"dns_suffix"`
-}
-
-type AuthConfig struct {
-	SessionDuration time.Duration `yaml:"session_duration"`
-}
-
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
@@ -66,7 +54,6 @@ func Default() Config {
 			RootDir:    "./var/objects",
 			SQLitePath: "./var/mockbucket.db",
 		},
-		Auth: AuthConfig{SessionDuration: time.Hour},
 	}
 }
 
@@ -114,9 +101,6 @@ func (c Config) Validate() error {
 	}
 	if c.Server.ShutdownTimeout <= 0 {
 		problems = append(problems, "server.shutdown_timeout must be positive")
-	}
-	if c.Auth.SessionDuration <= 0 {
-		problems = append(problems, "auth.session_duration must be positive")
 	}
 	if c.Frontends.Type == "" {
 		problems = append(problems, "frontend.type is required (s3, gcs, azure_blob, azure_datalake)")

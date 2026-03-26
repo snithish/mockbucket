@@ -12,6 +12,7 @@ import (
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
+	"github.com/snithish/mockbucket/internal/seed"
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
@@ -106,8 +107,12 @@ func newAzureDataLakeTestMux(t *testing.T) (*http.ServeMux, *storage.SQLiteStore
 		Objects:  objects,
 	}
 	cfg := config.Default()
-	cfg.Azure.Account = "mockstorage"
-	cfg.Azure.Key = base64.StdEncoding.EncodeToString([]byte("mockstorage-key-32bytes!!"))
+	cfg.Seed.Azure.Accounts = []seed.AzureAccountSeed{
+		{
+			Name: "mockstorage",
+			Key:  base64.StdEncoding.EncodeToString([]byte("mockstorage-key-32bytes!!")),
+		},
+	}
 
 	mux := http.NewServeMux()
 	Register(mux, cfg, deps)

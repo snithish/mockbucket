@@ -7,8 +7,6 @@ storage:
   sqlite_path: ./var/mockbucket.db
 frontends:
   type: s3  # s3 | gcs | azure_blob | azure_datalake
-auth:
-  session_duration: 1h
 seed:
   buckets:
     - demo

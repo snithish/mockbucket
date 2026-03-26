@@ -89,8 +89,6 @@ storage:
   sqlite_path: {tmp_dir}/mockbucket.db
 frontends:
   type: {frontend_type}
-auth:
-  session_duration: 1h
 seed:
 {indented}
 """)

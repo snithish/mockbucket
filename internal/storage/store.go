@@ -232,13 +232,6 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 }
 
 func (s *SQLiteStore) initSchema() error {
-	if err := s.applyBaseSchema(); err != nil {
-		return err
-	}
-	return s.migrateSchema()
-}
-
-func (s *SQLiteStore) applyBaseSchema() error {
 	statements := []string{
 		`PRAGMA journal_mode=WAL;`,
 		`CREATE TABLE IF NOT EXISTS buckets (name TEXT PRIMARY KEY, created_at TIMESTAMP NOT NULL);`,
@@ -287,6 +280,7 @@ func (s *SQLiteStore) applyBaseSchema() error {
 			principal_name TEXT NOT NULL,
 			created_at TIMESTAMP NOT NULL
 		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_service_accounts_client_email ON service_accounts(client_email);`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -294,179 +288,6 @@ func (s *SQLiteStore) applyBaseSchema() error {
 		}
 	}
 	return nil
-}
-
-func (s *SQLiteStore) migrateSchema() error {
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{name: "access_keys", fn: s.migrateAccessKeys},
-		{name: "service_accounts", fn: s.migrateServiceAccounts},
-		{name: "drop_redundant_indexes", fn: s.dropRedundantIndexes},
-	}
-	for _, step := range steps {
-		if err := step.fn(); err != nil {
-			return fmt.Errorf("migrate %s: %w", step.name, err)
-		}
-	}
-	return nil
-}
-
-func (s *SQLiteStore) migrateAccessKeys() error {
-	columns, err := tableColumns(s.db, "access_keys")
-	if err != nil {
-		return err
-	}
-	_, hasAllowedRoles := columns["allowed_roles_json"]
-	_, hasPrincipalName := columns["principal_name"]
-	if !hasAllowedRoles {
-		if _, err := s.db.Exec(`ALTER TABLE access_keys ADD COLUMN allowed_roles_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
-			return fmt.Errorf("migrate access_keys: %w", err)
-		}
-		hasAllowedRoles = true
-	}
-	if hasPrincipalName {
-		if err := s.rebuildAccessKeysTable(hasAllowedRoles); err != nil {
-			return fmt.Errorf("migrate access_keys: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *SQLiteStore) migrateServiceAccounts() error {
-	hasDuplicates, err := s.serviceAccountsHaveDuplicateEmails()
-	if err != nil {
-		return err
-	}
-	if hasDuplicates {
-		if err := s.rebuildServiceAccountsTableUniqueEmails(); err != nil {
-			return err
-		}
-	}
-	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_service_accounts_client_email ON service_accounts(client_email)`); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *SQLiteStore) rebuildAccessKeysTable(hasAllowedRoles bool) error {
-	return s.withTx(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`
-			CREATE TABLE access_keys_new (
-				id TEXT PRIMARY KEY,
-				secret TEXT NOT NULL,
-				allowed_roles_json TEXT NOT NULL DEFAULT '[]',
-				created_at TIMESTAMP NOT NULL
-			)`); err != nil {
-			return err
-		}
-		insertStmt := `
-			INSERT INTO access_keys_new(id, secret, allowed_roles_json, created_at)
-			SELECT id, secret, '[]', created_at
-			FROM access_keys`
-		if hasAllowedRoles {
-			insertStmt = `
-				INSERT INTO access_keys_new(id, secret, allowed_roles_json, created_at)
-				SELECT id, secret, COALESCE(NULLIF(TRIM(allowed_roles_json), ''), '[]'), created_at
-				FROM access_keys`
-		}
-		if _, err := tx.Exec(insertStmt); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DROP TABLE access_keys`); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`ALTER TABLE access_keys_new RENAME TO access_keys`); err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
-func (s *SQLiteStore) serviceAccountsHaveDuplicateEmails() (bool, error) {
-	row := s.db.QueryRow(`
-		SELECT 1
-		FROM service_accounts
-		GROUP BY client_email
-		HAVING COUNT(*) > 1
-		LIMIT 1`)
-	var exists int
-	if err := row.Scan(&exists); err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func (s *SQLiteStore) rebuildServiceAccountsTableUniqueEmails() error {
-	return s.withTx(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`
-			CREATE TABLE service_accounts_new (
-				token TEXT PRIMARY KEY,
-				client_email TEXT NOT NULL,
-				principal_name TEXT NOT NULL,
-				created_at TIMESTAMP NOT NULL
-			)`); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO service_accounts_new(token, client_email, principal_name, created_at)
-			SELECT token, client_email, principal_name, created_at
-			FROM service_accounts s
-			WHERE s.rowid = (
-				SELECT s2.rowid
-				FROM service_accounts s2
-				WHERE s2.client_email = s.client_email
-				ORDER BY s2.created_at DESC, s2.rowid DESC
-				LIMIT 1
-			)`); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DROP TABLE service_accounts`); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`ALTER TABLE service_accounts_new RENAME TO service_accounts`); err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
-func (s *SQLiteStore) dropRedundantIndexes() error {
-	statements := []string{
-		`DROP INDEX IF EXISTS idx_objects_bucket_key`,
-		`DROP INDEX IF EXISTS idx_multipart_parts_upload_id`,
-	}
-	for _, statement := range statements {
-		if _, err := s.db.Exec(statement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	columns := map[string]struct{}{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, err
-		}
-		columns[name] = struct{}{}
-	}
-	return columns, rows.Err()
 }
 
 func (s *SQLiteStore) EnsureBucket(ctx context.Context, name string) error {

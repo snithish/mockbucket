@@ -216,13 +216,6 @@ Supported frontend profiles:
 | `azure_blob` | Azure Blob protocol subset (anonymous or account-aware SharedKey mode) |
 | `azure_datalake` | Azure Data Lake Gen2 subset plus Blob-compat bridge operations for SDKs |
 
-### Auth
-
-```yaml
-auth:
-  session_duration: 1h   # STS session token lifetime
-```
-
 ## Design Caveats
 
 ### Terms used in this README
@@ -359,10 +352,11 @@ like Azurite: account name is parsed from the request path and matched against
 seed data.
 
 ```yaml
-azure:
-  accounts:
-    - name: mockstorage
-      key: bW9ja3N0b3JhZ2Uta2V5LTMyYnl0ZXMhIQ==
+seed:
+  azure:
+    accounts:
+      - name: mockstorage
+        key: bW9ja3N0b3JhZ2Uta2V5LTMyYnl0ZXMhIQ==
 ```
 
 Point your SDK at the MockBucket endpoint using the account name in the connection string:
@@ -370,10 +364,6 @@ Point your SDK at the MockBucket endpoint using the account name in the connecti
 ```text
 DefaultEndpointsProtocol=http;AccountName=mockstorage;AccountKey=<base64>;BlobEndpoint=http://localhost:9000;EndpointSuffix=core.windows.net
 ```
-
-The top-level `azure:` config block is still accepted for backward
-compatibility, but `seed.azure.accounts` is the canonical source for account
-data.
 
 The `azure_blob` and `azure_datalake` frontends are mutually exclusive at runtime (like S3 and GCS). STS is independent and can coexist with either Azure frontend.
 

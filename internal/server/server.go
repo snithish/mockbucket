@@ -51,7 +51,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 		_ = metadata.Close()
 		return nil, fmt.Errorf("apply seed: %w", err)
 	}
-	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, DefaultDuration: cfg.Auth.SessionDuration}}
+	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, DefaultDuration: time.Hour}}
 
 	var gcsServiceAccounts []seed.ServiceAccountJSON
 	if cfg.Frontends.Type == config.FrontendGCS {
