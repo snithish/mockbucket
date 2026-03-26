@@ -1,7 +1,6 @@
 # AGENTS.md - Guide for AI Coding Agents
 
 MockBucket is a standalone object-storage emulator (S3, STS, GCS) built in Go 1.26+.
-See `plan.md` for the phased implementation plan. Preserve phase boundaries.
 
 ## Build / Lint / Test Commands
 
