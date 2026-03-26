@@ -26,10 +26,3 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		dfsHandler.ServeHTTP(w, r)
 	}))
 }
-
-func handleRoot(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	azure_shared.SetVersionHeader(w)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"filesystems":[]}`))
-}

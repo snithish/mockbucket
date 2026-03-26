@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-
-	"github.com/snithish/mockbucket/internal/core"
 )
 
 var (
@@ -103,8 +101,4 @@ func AuthenticateAnonymousOrSharedKey(resolver Authenticator) func(next http.Han
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func SubjectFromAccount(account string) core.Subject {
-	return core.Subject{PrincipalName: account}
 }

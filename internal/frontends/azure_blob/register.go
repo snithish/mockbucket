@@ -18,14 +18,3 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 
 	mux.Handle("/", blobHandler)
 }
-
-func handleRoot(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	azure_shared.SetVersionHeader(w)
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(http.StatusOK)
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?><EnumerationResults ServiceEndpoint="` + scheme + `://` + r.Host + `"><Containers></Containers></EnumerationResults>`))
-}

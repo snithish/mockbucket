@@ -17,22 +17,6 @@ import (
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
-func TestHandleRoot(t *testing.T) {
-	deps := common.Dependencies{}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-
-	handleRoot(rec, req, deps)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("handleRoot() status = %d, want 200", rec.Code)
-	}
-
-	if ct := rec.Header().Get("Content-Type"); ct != "application/xml" {
-		t.Fatalf("Content-Type = %q, want application/xml", ct)
-	}
-}
-
 func TestListContainers(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -453,13 +437,6 @@ func TestAuthResolver(t *testing.T) {
 			t.Fatal("GetAccount() returned true, want false")
 		}
 	})
-}
-
-func TestSubjectFromAccount(t *testing.T) {
-	subject := azauth.SubjectFromAccount("test-account")
-	if subject.PrincipalName != "test-account" {
-		t.Fatalf("PrincipalName = %q, want test-account", subject.PrincipalName)
-	}
 }
 
 func TestComputeSharedKeySignature(t *testing.T) {

@@ -8,8 +8,6 @@ import urllib.request
 
 from compat import ENDPOINT, fail, ok, skip
 
-from google.auth import credentials
-
 
 SEED = """\
 buckets:

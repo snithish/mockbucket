@@ -19,11 +19,6 @@ func RootHandler(deps common.Dependencies) http.Handler {
 	})
 }
 
-func IsQueryRequest(r *http.Request) bool {
-	action, _ := requestAction(r)
-	return action != ""
-}
-
 func handleAssumeRole(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
 	action, err := requestAction(r)
 	if err != nil {
