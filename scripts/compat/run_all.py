@@ -34,15 +34,16 @@ import time
 from compat import ENDPOINT, _c, _BOLD, _CYAN, _DIM, heading, ok, fail, start_server
 
 import aws
-import azure
+import azure_blob
+import azure_datalake
 import gcs
 
 # Map cloud names to modules and their frontend types
 CLOUDS = {
     "aws": {"module": aws, "frontend": "s3"},
     "gcs": {"module": gcs, "frontend": "gcs"},
-    "azure_blob": {"module": azure, "frontend": "azure_blob"},
-    "azure_datalake": {"module": azure, "frontend": "azure_datalake"},
+    "azure_blob": {"module": azure_blob, "frontend": "azure_blob"},
+    "azure_datalake": {"module": azure_datalake, "frontend": "azure_datalake"},
 }
 
 
@@ -82,9 +83,6 @@ def cmd_test(args: argparse.Namespace) -> None:
         heading(f"{name}")
 
         extra_env = mod.export_env() if hasattr(mod, "export_env") else {}
-        # Set the Azure frontend type for azure tests
-        if name.startswith("azure_"):
-            extra_env["MOCKBUCKET_AZURE_FRONTEND"] = frontend
         seed = mod.seed() if hasattr(mod, "seed") else None
         start_server(frontend, extra_env, seed=seed)
 
