@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"cloud.google.com/go/storage"
+	"github.com/snithish/mockbucket/internal/config"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"golang.org/x/oauth2"
@@ -29,7 +30,7 @@ func TestGCSFrontendContract(t *testing.T) {
 
 func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
 	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.GCS = true
+		cfg.Frontends.Type = config.FrontendGCS
 	})
 	t.Cleanup(func() { _ = runtime.Close() })
 
@@ -93,7 +94,7 @@ func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
 
 func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
 	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.GCS = true
+		cfg.Frontends.Type = config.FrontendGCS
 	})
 	t.Cleanup(func() { _ = runtime.Close() })
 
@@ -204,7 +205,7 @@ type gcsContractClient struct {
 func newGCSContractClient(t *testing.T) frontendContractClient {
 	t.Helper()
 	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.GCS = true
+		cfg.Frontends.Type = config.FrontendGCS
 	})
 	t.Cleanup(func() { _ = runtime.Close() })
 

@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"gopkg.in/yaml.v3"
 
+	"github.com/snithish/mockbucket/internal/config"
 	mbconfig "github.com/snithish/mockbucket/internal/config"
 )
 
@@ -179,7 +180,7 @@ func (c *s3ContractClient) MultipartUpload(ctx context.Context, bucket, key stri
 func newAWSTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	return newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.S3 = true
+		cfg.Frontends.Type = config.FrontendS3
 		if err := yaml.Unmarshal([]byte(awsSTSTestSeedYAML), &cfg.Seed); err != nil {
 			t.Fatalf("parse sts seed: %v", err)
 		}

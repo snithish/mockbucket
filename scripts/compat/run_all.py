@@ -6,16 +6,22 @@
 #     "boto3",
 #     "duckdb",
 #     "google-cloud-storage",
+#     "azure-storage-blob",
+#     "azure-storage-file-datalake",
 # ]
 # ///
 """Compatibility tests for mockbucket.
 
 Usage:
-    uv run python scripts/compat/run_all.py serve        # start server, print info, block
-    uv run python scripts/compat/run_all.py test         # run all cloud tests (default)
-    uv run python scripts/compat/run_all.py test aws     # run AWS S3/STS tests only
-    uv run python scripts/compat/run_all.py test gcs     # run GCS tests only
-    uv run python scripts/compat/run_all.py --debug test # verbose HTTP logging
+    uv run python scripts/compat/run_all.py serve s3       # start S3 server
+    uv run python scripts/compat/run_all.py serve azure_blob  # start Azure Blob server
+    uv run python scripts/compat/run_all.py serve azure_datalake  # start Azure DataLake server
+    uv run python scripts/compat/run_all.py test           # run all cloud tests (default)
+    uv run python scripts/compat/run_all.py test aws       # run AWS S3/STS tests only
+    uv run python scripts/compat/run_all.py test gcs       # run GCS tests only
+    uv run python scripts/compat/run_all.py test azure_blob   # run Azure Blob tests only
+    uv run python scripts/compat/run_all.py test azure_datalake  # run Azure DataLake tests only
+    uv run python scripts/compat/run_all.py --debug test   # verbose HTTP logging
 """
 from __future__ import annotations
 
@@ -28,24 +34,31 @@ import time
 from compat import ENDPOINT, _c, _BOLD, _CYAN, _DIM, heading, ok, fail, start_server
 
 import aws
+import azure
 import gcs
 
+# Map cloud names to modules and their frontend types
 CLOUDS = {
-    "aws": aws,
-    "gcs": gcs,
+    "aws": {"module": aws, "frontend": "s3"},
+    "gcs": {"module": gcs, "frontend": "gcs"},
+    "azure_blob": {"module": azure, "frontend": "azure_blob"},
+    "azure_datalake": {"module": azure, "frontend": "azure_datalake"},
 }
 
 
-def cmd_serve(_args: argparse.Namespace) -> None:
-    """Start the server with all frontends enabled and block."""
-    # Default to S3 for serve mode since it's the most common.
-    start_server({"s3": True, "gcs": False})
+def cmd_serve(args: argparse.Namespace) -> None:
+    """Start the server with the specified frontend and block."""
+    frontend = args.frontend if args.frontend else "s3"
+    start_server(frontend)
     print()
     print(f"  {_c(_BOLD, 'mockbucketd')} running")
     print()
+    print(f"    frontend  {_c(_CYAN, frontend)}")
     print(f"    endpoint  {_c(_CYAN, ENDPOINT)}")
     print(f"    readyz    {_c(_CYAN, f'{ENDPOINT}/readyz')}")
-    print(f"    access    {_c(_DIM, 'admin / admin-secret')}")
+    print()
+    print(f"  {_c(_DIM, 'S3: admin / admin-secret')}")
+    print(f"  {_c(_DIM, 'Azure: mockstorage / base64(mockstorage-key-32bytes!!)')}")
     print()
     print(f"  {_c(_DIM, 'Ctrl-C to stop')}")
     print()
@@ -63,12 +76,17 @@ def cmd_test(args: argparse.Namespace) -> None:
 
     errors = 0
     for name in selected:
-        mod = CLOUDS[name]
+        cloud_info = CLOUDS[name]
+        mod = cloud_info["module"]
+        frontend = cloud_info["frontend"]
         heading(f"{name}")
 
-        extra_env = mod.export_env()
+        extra_env = mod.export_env() if hasattr(mod, "export_env") else {}
+        # Set the Azure frontend type for azure tests
+        if name.startswith("azure_"):
+            extra_env["MOCKBUCKET_AZURE_FRONTEND"] = frontend
         seed = mod.seed() if hasattr(mod, "seed") else None
-        start_server(mod.configure(), extra_env, seed=seed)
+        start_server(frontend, extra_env, seed=seed)
 
         errors += mod.run()
 
@@ -82,7 +100,7 @@ def cmd_test(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="mockbucket compat test runner",
-        usage="%(prog)s [serve | test] [--debug] [aws | gcs]",
+        usage="%(prog)s [serve | test] [--debug] [aws | gcs | azure_blob | azure_datalake]",
     )
     parser.add_argument(
         "command",

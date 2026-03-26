@@ -7,11 +7,12 @@ import (
 )
 
 type Document struct {
-	Buckets []string      `yaml:"buckets"`
-	Roles   []RoleSeed    `yaml:"roles"`
-	Objects []ObjectSeed  `yaml:"objects"`
-	S3      S3SeedConfig  `yaml:"s3"`
-	GCS     GCSSeedConfig `yaml:"gcs"`
+	Buckets []string        `yaml:"buckets"`
+	Roles   []RoleSeed      `yaml:"roles"`
+	Objects []ObjectSeed    `yaml:"objects"`
+	S3      S3SeedConfig    `yaml:"s3"`
+	GCS     GCSSeedConfig   `yaml:"gcs"`
+	Azure   AzureSeedConfig `yaml:"azure"`
 }
 
 type RoleSeed struct {
@@ -47,6 +48,16 @@ type GCSTokenSeed struct {
 type GCSServiceCredSeed struct {
 	ClientEmail string `yaml:"client_email"`
 	Principal   string `yaml:"principal"`
+}
+
+type AzureSeedConfig struct {
+	Accounts []AzureAccountSeed `yaml:"accounts"`
+}
+
+type AzureAccountSeed struct {
+	Name      string `yaml:"name"`
+	Key       string `yaml:"key"`
+	DNSSuffix string `yaml:"dns_suffix"`
 }
 
 func (d Document) Validate() error {

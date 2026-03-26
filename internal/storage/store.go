@@ -62,6 +62,13 @@ type SeedState struct {
 	Objects         []SeedObject
 	AccessKeys      []SeedAccessKey
 	ServiceAccounts []core.ServiceAccount
+	AzureAccounts   []AzureAccountConfig
+}
+
+type AzureAccountConfig struct {
+	Name      string
+	Key       []byte
+	DNSSuffix string
 }
 
 type SeedAccessKey struct {

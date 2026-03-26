@@ -74,7 +74,7 @@ objects:
 """
 
 
-def _write_config(tmp_dir: Path, frontends: dict[str, bool], seed: str | None = None) -> Path:
+def _write_config(tmp_dir: Path, frontend_type: str, seed: str | None = None) -> Path:
     cfg = tmp_dir / "mockbucket.yaml"
     if seed is None:
         seed = _DEFAULT_SEED
@@ -88,9 +88,7 @@ storage:
   root_dir: {tmp_dir}/objects
   sqlite_path: {tmp_dir}/mockbucket.db
 frontends:
-  s3: {"true" if frontends.get("s3") else "false"}
-  gcs: {"true" if frontends.get("gcs") else "false"}
-  azure: false
+  type: {frontend_type}
 auth:
   session_duration: 1h
 seed:
@@ -128,15 +126,15 @@ def _cleanup() -> None:
 atexit.register(_cleanup)
 
 
-def start_server(frontends: dict[str, bool], extra_env: dict[str, str] | None = None, seed: str | None = None) -> Path:
-    """Start mockbucketd with the given frontend config. Returns temp dir."""
+def start_server(frontend_type: str, extra_env: dict[str, str] | None = None, seed: str | None = None) -> Path:
+    """Start mockbucketd with the given frontend type. Returns temp dir."""
     global _server_proc, _tmp_dir
 
     # Stop any previously running server.
     _cleanup()
 
     _tmp_dir = Path(tempfile.mkdtemp(prefix="mockbucket-compat."))
-    cfg = _write_config(_tmp_dir, frontends, seed=seed)
+    cfg = _write_config(_tmp_dir, frontend_type, seed=seed)
 
     # Apply extra env to current process so child tools (awscli, boto3) see them.
     env = {**os.environ}

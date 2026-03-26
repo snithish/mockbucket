@@ -20,9 +20,6 @@ import (
 const xmlNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
-	if !cfg.Frontends.S3 {
-		return
-	}
 	bucketHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket := r.PathValue("bucket")
 		switch {

@@ -5,7 +5,8 @@ import (
 	"net/http"
 
 	"github.com/snithish/mockbucket/internal/config"
-	"github.com/snithish/mockbucket/internal/frontends/azure"
+	"github.com/snithish/mockbucket/internal/frontends/azure_blob"
+	"github.com/snithish/mockbucket/internal/frontends/azure_datalake"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/frontends/gcs"
 	"github.com/snithish/mockbucket/internal/frontends/s3"
@@ -13,18 +14,29 @@ import (
 )
 
 func Validate(cfg config.Config) error {
-	if cfg.Frontends.Azure {
-		return fmt.Errorf("frontends.azure is not implemented yet")
+	if cfg.Frontends.Type == "" {
+		return fmt.Errorf("frontend.type is required")
 	}
-	if cfg.Frontends.S3 && cfg.Frontends.GCS {
-		return fmt.Errorf("frontends.s3 and frontends.gcs cannot both be enabled")
+	switch cfg.Frontends.Type {
+	case config.FrontendS3, config.FrontendGCS, config.FrontendAzureBlob, config.FrontendAzureDataLake:
+		return nil
+	default:
+		return fmt.Errorf("frontend.type must be one of: s3, gcs, azure_blob, azure_datalake")
 	}
-	return nil
 }
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, gcsServiceAccounts []seed.ServiceAccountJSON) {
-	registerAWSRoot(mux, cfg, deps)
-	s3.Register(mux, cfg, deps)
-	gcs.Register(mux, cfg, deps, gcsServiceAccounts)
-	azure.Register(mux, cfg)
+	switch cfg.Frontends.Type {
+	case config.FrontendS3:
+		registerAWSRoot(mux, cfg, deps)
+		s3.Register(mux, cfg, deps)
+	case config.FrontendGCS:
+		gcs.Register(mux, cfg, deps, gcsServiceAccounts)
+	case config.FrontendAzureBlob:
+		azure_blob.Register(mux, cfg, deps)
+	case config.FrontendAzureDataLake:
+		azure_datalake.Register(mux, cfg, deps)
+	default:
+		// Should not happen - validated in config.Validate()
+	}
 }

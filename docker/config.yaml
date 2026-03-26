@@ -6,9 +6,7 @@ storage:
   root_dir: /tmp/data/objects
   sqlite_path: /tmp/data/mockbucket.db
 frontends:
-  s3: true
-  gcs: false
-  azure: false
+  type: s3
 auth:
   session_duration: 1h
 seed:

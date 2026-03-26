@@ -6,12 +6,7 @@ storage:
   root_dir: ./var/objects
   sqlite_path: ./var/mockbucket.db
 frontends:
-  s3: true
-  gcs: false
-  azure: false
-# Supported profiles:
-# - S3 (with STS): s3: true, gcs: false
-# - GCS only: s3: false, gcs: true
+  type: s3  # s3 | gcs | azure_blob | azure_datalake
 auth:
   session_duration: 1h
 seed:

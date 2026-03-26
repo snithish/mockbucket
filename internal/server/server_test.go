@@ -33,15 +33,6 @@ func TestRuntimeRegistersHealthRoutes(t *testing.T) {
 	}
 }
 
-func TestRuntimeRejectsUnsupportedFrontends(t *testing.T) {
-	cfg := baseConfig(t)
-	cfg.Frontends.Azure = true
-	_, err := New(context.Background(), cfg, slog.New(slog.NewTextHandler(testWriter{t}, nil)))
-	if err == nil {
-		t.Fatal("New() error = nil, want unsupported frontend error")
-	}
-}
-
 func TestParseServerAddress(t *testing.T) {
 	tests := []struct {
 		addr     string
@@ -83,6 +74,7 @@ func baseConfig(t *testing.T) mbconfig.Config {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := mbconfig.Default()
+	cfg.Frontends.Type = mbconfig.FrontendS3
 	cfg.Storage.RootDir = dir + "/objects"
 	cfg.Storage.SQLitePath = dir + "/mockbucket.db"
 	cfg.Server.RequestLog = false

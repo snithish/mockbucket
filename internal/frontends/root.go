@@ -10,9 +10,6 @@ import (
 )
 
 func registerAWSRoot(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
-	if !cfg.Frontends.S3 {
-		return
-	}
 	s3Root := s3.RootHandler(cfg, deps)
 	stsRoot := sts.RootHandler(deps)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

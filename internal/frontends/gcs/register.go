@@ -30,10 +30,6 @@ const (
 )
 
 func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, gcsServiceAccounts []seed.ServiceAccountJSON) {
-	if !cfg.Frontends.GCS {
-		return
-	}
-
 	RegisterServiceAccountEndpoint(mux, gcsServiceAccounts)
 
 	bucketsHandler := authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,20 +101,18 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, g
 	mux.Handle(downloadBasePath+"/{bucket}/o/{object...}", downloadHandler)
 	mux.Handle(uploadBasePath+"/{bucket}/o", uploadHandler)
 	mux.HandleFunc("/oauth2/v4/token", authgcp.TokenEndpoint(deps.AuthResolver, deps.SessionManager))
-	if !cfg.Frontends.S3 {
-		mux.Handle("/{bucket}/{object...}", authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				http.NotFound(w, r)
-				return
-			}
-			key, err := pathObject(r)
-			if err != nil {
-				writeError(w, core.ErrInvalidArgument)
-				return
-			}
-			handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
-		})))
-	}
+	mux.Handle("/{bucket}/{object...}", authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		key, err := pathObject(r)
+		if err != nil {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
+	})))
 }
 
 type bucketResponse struct {

@@ -59,7 +59,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	authResolver := iam.Resolver{Store: metadata, SessionManager: iam.SessionManager{Store: metadata, DefaultDuration: cfg.Auth.SessionDuration}}
 
 	var gcsServiceAccounts []seed.ServiceAccountJSON
-	if cfg.Frontends.GCS {
+	if cfg.Frontends.Type == config.FrontendGCS {
 		host, port, err := parseServerAddress(cfg.Server.Address)
 		if err != nil {
 			return nil, fmt.Errorf("parse server address: %w", err)
@@ -172,10 +172,10 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Meta
 		} else {
 			details.Metadata.Healthy = true
 		}
-		details.Frontends.S3 = cfg.Frontends.S3
-		details.Frontends.STS = cfg.Frontends.S3
-		details.Frontends.GCS = cfg.Frontends.GCS
-		details.Frontends.Azure = cfg.Frontends.Azure
+		details.Frontends.S3 = cfg.Frontends.Type == config.FrontendS3
+		details.Frontends.STS = cfg.Frontends.Type == config.FrontendS3
+		details.Frontends.GCS = cfg.Frontends.Type == config.FrontendGCS
+		details.Frontends.Azure = cfg.Frontends.Type == config.FrontendAzureBlob || cfg.Frontends.Type == config.FrontendAzureDataLake
 		details.Seed.Buckets = len(cfg.Seed.Buckets)
 
 		status := http.StatusOK

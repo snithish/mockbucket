@@ -17,6 +17,7 @@ type Config struct {
 	Seed      SeedData       `yaml:"seed"`
 	Frontends FrontendConfig `yaml:"frontends"`
 	Auth      AuthConfig     `yaml:"auth"`
+	Azure     AzureConfig    `yaml:"azure"`
 }
 
 type ServerConfig struct {
@@ -74,9 +75,22 @@ type GCSToken struct {
 }
 
 type FrontendConfig struct {
-	S3    bool `yaml:"s3"`
-	GCS   bool `yaml:"gcs"`
-	Azure bool `yaml:"azure"`
+	Type FrontendType `yaml:"type"`
+}
+
+type FrontendType string
+
+const (
+	FrontendS3            FrontendType = "s3"
+	FrontendGCS           FrontendType = "gcs"
+	FrontendAzureBlob     FrontendType = "azure_blob"
+	FrontendAzureDataLake FrontendType = "azure_datalake"
+)
+
+type AzureConfig struct {
+	Account   string `yaml:"account"`
+	Key       string `yaml:"key"`
+	DNSSuffix string `yaml:"dns_suffix"`
 }
 
 type AuthConfig struct {
@@ -145,6 +159,15 @@ func (c Config) Validate() error {
 	}
 	if c.Auth.SessionDuration <= 0 {
 		problems = append(problems, "auth.session_duration must be positive")
+	}
+	if c.Frontends.Type == "" {
+		problems = append(problems, "frontend.type is required (s3, gcs, azure_blob, azure_datalake)")
+	}
+	switch c.Frontends.Type {
+	case FrontendS3, FrontendGCS, FrontendAzureBlob, FrontendAzureDataLake:
+		// valid
+	default:
+		problems = append(problems, "frontend.type must be one of: s3, gcs, azure_blob, azure_datalake")
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
