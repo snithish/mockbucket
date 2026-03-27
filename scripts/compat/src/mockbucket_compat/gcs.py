@@ -7,6 +7,7 @@ import urllib.request
 from typing import Any
 
 from .compat import ENDPOINT, fail, ok, skip
+from .pyspark import gcs_roundtrip
 from .suite import CompatSuite
 
 SEED = """\
@@ -53,12 +54,14 @@ class GCSCompatSuite(CompatSuite):
             client_options={"api_endpoint": ENDPOINT},
         )
 
-    def run(self) -> int:
+    def run(self, with_pyspark: bool = False) -> int:
         errors = 0
         errors += self._test_buckets()
         errors += self._test_objects()
         errors += self._test_multipart()
         self._test_duckdb()
+        if with_pyspark:
+            errors += self._test_pyspark()
         return errors
 
     def _test_buckets(self) -> int:
@@ -143,3 +146,20 @@ class GCSCompatSuite(CompatSuite):
 
     def _test_duckdb(self) -> None:
         skip("duckdb - GCS requires native extension (github.com/northpolesec/duckdb-gcs) which does not support custom endpoints")
+
+    def _test_pyspark(self) -> int:
+        try:
+            count = gcs_roundtrip(
+                endpoint=ENDPOINT,
+                service_account_info=self._fetch_service_account_info(),
+                bucket="compat-demo",
+                key_prefix="compat/pyspark",
+            )
+        except Exception as err:
+            fail(f"pyspark gcs parquet - write/read failed: {err}")
+            return 1
+        if count != 3:
+            fail(f"pyspark gcs parquet - count={count}, want 3")
+            return 1
+        ok("pyspark gcs parquet")
+        return 0

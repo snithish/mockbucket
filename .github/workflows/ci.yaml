@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,6 +13,8 @@ permissions:
 jobs:
   gate:
     uses: ./.github/workflows/gate.yaml
+    with:
+      run_pyspark: ${{ github.event_name == 'workflow_dispatch' }}
 
   docker-scan:
     needs: gate

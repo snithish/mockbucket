@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 from .compat import ENDPOINT, CompatError, fail, ok, skip
 from .parquet import read_count, s3_con, write_parquet_s3
+from .pyspark import s3a_roundtrip
 from .suite import CompatSuite
 
 
@@ -25,7 +26,7 @@ class AWSCompatSuite(CompatSuite):
             "AWS_REGION": "us-east-1",
         }
 
-    def run(self) -> int:
+    def run(self, with_pyspark: bool = False) -> int:
         errors = 0
         errors += self._test_awscli()
         errors += self._test_boto3()
@@ -33,6 +34,8 @@ class AWSCompatSuite(CompatSuite):
         errors += self._test_sts_assume_role()
         errors += self._test_sts_allowed_roles()
         errors += self._test_duckdb()
+        if with_pyspark:
+            errors += self._test_pyspark()
         return errors
 
     def _test_awscli(self) -> int:
@@ -256,4 +259,23 @@ class AWSCompatSuite(CompatSuite):
             fail(f"duckdb parquet - count={count}, want {2 * rows}")
             return 1
         ok("duckdb parquet")
+        return 0
+
+    def _test_pyspark(self) -> int:
+        try:
+            count = s3a_roundtrip(
+                endpoint="127.0.0.1:19000",
+                access_key=os.environ["AWS_ACCESS_KEY_ID"],
+                secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                region=os.environ["AWS_REGION"],
+                bucket="demo",
+                key_prefix="compat/pyspark",
+            )
+        except Exception as err:
+            fail(f"pyspark s3a parquet - write/read failed: {err}")
+            return 1
+        if count != 3:
+            fail(f"pyspark s3a parquet - count={count}, want 3")
+            return 1
+        ok("pyspark s3a parquet")
         return 0

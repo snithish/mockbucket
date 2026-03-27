@@ -5,6 +5,7 @@ Usage:
     uv run --project scripts/compat mockbucket-compat test
     uv run --project scripts/compat mockbucket-compat test aws
     uv run --project scripts/compat mockbucket-compat test gcs
+    uv run --project scripts/compat mockbucket-compat test --with-pyspark aws gcs
     uv run --project scripts/compat mockbucket-compat --debug test
 """
 
@@ -63,7 +64,7 @@ def cmd_test(args: argparse.Namespace) -> None:
         suite = COMPAT_SUITES[name]
         heading(suite.name)
         start_server(suite.frontend, suite.export_env(), seed=suite.seed())
-        errors += suite.run()
+        errors += suite.run(with_pyspark=args.with_pyspark)
 
     print()
     if errors:
@@ -86,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     test_parser = subparsers.add_parser("test", help="run compat tests")
+    test_parser.add_argument(
+        "--with-pyspark",
+        action="store_true",
+        help="run optional pyspark parquet compatibility checks",
+    )
     test_parser.add_argument(
         "clouds",
         nargs="*",

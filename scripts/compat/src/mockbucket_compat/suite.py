@@ -18,5 +18,5 @@ class CompatSuite(ABC):
         return None
 
     @abstractmethod
-    def run(self) -> int:
+    def run(self, with_pyspark: bool = False) -> int:
         """Run the suite and return the number of failures."""
