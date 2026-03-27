@@ -10,7 +10,7 @@ make run            # ./bin/mockbucketd --config mockbucket.yaml
 make test           # go test ./...
 make fmt            # gofmt -w $(git ls-files '*.go')
 make tidy           # go mod tidy
-make compat         # scripts/compat/run_all.sh (requires running server)
+make compat         # uv run --project scripts/compat mockbucket-compat test
 make clean          # rm -rf ./bin
 ```
 
@@ -27,11 +27,11 @@ All Python work in this project uses `uv`. Never install packages globally or wi
 Use `uv run` to execute scripts and `uv pip` to manage dependencies within the project's virtual environment.
 
 ```sh
-uv run scripts/compat/run_all.py serve          # start server for manual testing
-uv run scripts/compat/run_all.py test           # run all cloud tests (default)
-uv run scripts/compat/run_all.py test aws       # run AWS S3/STS tests only
-uv run scripts/compat/run_all.py test gcs       # run GCS tests only
-uv run scripts/compat/run_all.py --debug test   # verbose HTTP logging
+uv run --project scripts/compat mockbucket-compat serve          # start server for manual testing
+uv run --project scripts/compat mockbucket-compat test           # run all cloud tests (default)
+uv run --project scripts/compat mockbucket-compat test aws       # run AWS S3/STS tests only
+uv run --project scripts/compat mockbucket-compat test gcs       # run GCS tests only
+uv run --project scripts/compat mockbucket-compat --debug test   # verbose HTTP logging
 ```
 
 ## Architecture

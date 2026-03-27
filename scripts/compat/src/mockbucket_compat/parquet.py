@@ -25,12 +25,7 @@ def write_parquet_s3(
     rows_per_file: int,
     num_files: int,
 ) -> list[str]:
-    """Write num_files parquet files, each with rows_per_file rows.
-
-    Files are named part_0.parquet, part_1.parquet, etc.
-    Schema: (id BIGINT, val BIGINT) generated via generate_series + hash.
-    Returns list of URIs written.
-    """
+    """Write num_files parquet files, each with rows_per_file rows."""
     uris = []
     for i in range(num_files):
         lo = i * rows_per_file

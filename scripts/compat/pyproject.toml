@@ -1,0 +1,19 @@
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "mockbucket-compat"
+version = "0.1.0"
+description = "Compatibility test runner for MockBucket"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "awscli",
+    "boto3",
+    "duckdb",
+    "google-cloud-storage",
+]
+
+[project.scripts]
+mockbucket-compat = "mockbucket_compat.cli:main"

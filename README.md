@@ -510,19 +510,19 @@ The compatibility suite runs real AWS SDK and CLI tools against a live MockBucke
 
 ```sh
 # Run all tests
-uv run scripts/compat/run_all.py test
+uv run --project scripts/compat mockbucket-compat test
 
 # AWS tests only
-uv run scripts/compat/run_all.py test aws
+uv run --project scripts/compat mockbucket-compat test aws
 
 # GCS tests only
-uv run scripts/compat/run_all.py test gcs
+uv run --project scripts/compat mockbucket-compat test gcs
 
 # Start server for manual testing
-uv run scripts/compat/run_all.py serve
+uv run --project scripts/compat mockbucket-compat serve
 
 # Verbose HTTP logging
-uv run scripts/compat/run_all.py --debug test
+uv run --project scripts/compat mockbucket-compat --debug test
 ```
 
 ### Lint and Format

@@ -24,5 +24,6 @@ seed.local.yaml
 
 # python
 __pycache__/
+.venv/
 *.py[cod]
 *.pyo

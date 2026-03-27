@@ -23,7 +23,7 @@ help:
 	@printf "  fmt-check Check formatting without modifying files\n"
 	@printf "  lint      Run go vet\n"
 	@printf "  tidy      Run go mod tidy\n"
-	@printf "  compat    Execute the compatibility tests (uv run python scripts/compat/run_all.py)\n"
+	@printf "  compat    Execute the compatibility tests (uv run --project scripts/compat mockbucket-compat test)\n"
 	@printf "  docker    Build the Docker image\n"
 	@printf "  clean     Remove $(BIN_DIR)\n"
 
@@ -57,7 +57,7 @@ tidy:
 	@$(GO) mod tidy
 
 compat:
-	@uv run scripts/compat/run_all.py
+	@uv run --project scripts/compat mockbucket-compat test
 
 docker:
 	@docker build -t mockbucketd .
