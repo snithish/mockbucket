@@ -43,8 +43,6 @@ func TestValidateFrontendType(t *testing.T) {
 	}{
 		{name: "s3", typ: FrontendS3},
 		{name: "gcs", typ: FrontendGCS},
-		{name: "azure_blob", typ: FrontendAzureBlob},
-		{name: "azure_datalake", typ: FrontendAzureDataLake},
 		{name: "empty", typ: "", wantErr: true},
 		{name: "invalid", typ: "invalid", wantErr: true},
 	}

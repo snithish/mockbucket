@@ -6,21 +6,15 @@
 #     "boto3",
 #     "duckdb",
 #     "google-cloud-storage",
-#     "azure-storage-blob",
-#     "azure-storage-file-datalake",
 # ]
 # ///
 """Compatibility tests for mockbucket.
 
 Usage:
     uv run python scripts/compat/run_all.py serve s3       # start S3 server
-    uv run python scripts/compat/run_all.py serve azure_blob  # start Azure Blob server
-    uv run python scripts/compat/run_all.py serve azure_datalake  # start Azure DataLake server
     uv run python scripts/compat/run_all.py test           # run all cloud tests (default)
     uv run python scripts/compat/run_all.py test aws       # run AWS S3/STS tests only
     uv run python scripts/compat/run_all.py test gcs       # run GCS tests only
-    uv run python scripts/compat/run_all.py test azure_blob   # run Azure Blob tests only
-    uv run python scripts/compat/run_all.py test azure_datalake  # run Azure DataLake tests only
     uv run python scripts/compat/run_all.py --debug test   # verbose HTTP logging
 """
 from __future__ import annotations
@@ -34,16 +28,12 @@ import time
 from compat import ENDPOINT, _c, _BOLD, _CYAN, _DIM, heading, ok, fail, start_server
 
 import aws
-import azure_blob
-import azure_datalake
 import gcs
 
 # Map cloud names to modules and their frontend types
 CLOUDS = {
     "aws": {"module": aws, "frontend": "s3"},
     "gcs": {"module": gcs, "frontend": "gcs"},
-    "azure_blob": {"module": azure_blob, "frontend": "azure_blob"},
-    "azure_datalake": {"module": azure_datalake, "frontend": "azure_datalake"},
 }
 
 
@@ -59,7 +49,6 @@ def cmd_serve(args: argparse.Namespace) -> None:
     print(f"    readyz    {_c(_CYAN, f'{ENDPOINT}/readyz')}")
     print()
     print(f"  {_c(_DIM, 'S3: admin / admin-secret')}")
-    print(f"  {_c(_DIM, 'Azure: mockstorage / base64(mockstorage-key-32bytes!!)')}")
     print()
     print(f"  {_c(_DIM, 'Ctrl-C to stop')}")
     print()
@@ -98,7 +87,7 @@ def cmd_test(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="mockbucket compat test runner",
-        usage="%(prog)s [serve | test] [--debug] [aws | gcs | azure_blob | azure_datalake]",
+        usage="%(prog)s [serve | test] [--debug] [aws | gcs]",
     )
     parser.add_argument(
         "command",

@@ -6,7 +6,7 @@ storage:
   root_dir: ./var/objects
   sqlite_path: ./var/mockbucket.db
 frontends:
-  type: s3  # s3 | gcs | azure_blob | azure_datalake
+  type: s3  # s3 | gcs
 seed:
   buckets:
     - demo

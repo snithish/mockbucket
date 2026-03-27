@@ -150,10 +150,9 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Heal
 				Error   string `json:"error,omitempty"`
 			} `json:"metadata"`
 			Frontends struct {
-				S3    bool `json:"s3"`
-				STS   bool `json:"sts"`
-				GCS   bool `json:"gcs"`
-				Azure bool `json:"azure"`
+				S3  bool `json:"s3"`
+				STS bool `json:"sts"`
+				GCS bool `json:"gcs"`
 			} `json:"frontends"`
 			Seed struct {
 				Buckets int `json:"buckets"`
@@ -171,7 +170,6 @@ func registerHealth(mux *http.ServeMux, cfg config.Config, metadata storage.Heal
 		details.Frontends.S3 = cfg.Frontends.Type == config.FrontendS3
 		details.Frontends.STS = cfg.Frontends.Type == config.FrontendS3
 		details.Frontends.GCS = cfg.Frontends.Type == config.FrontendGCS
-		details.Frontends.Azure = cfg.Frontends.Type == config.FrontendAzureBlob || cfg.Frontends.Type == config.FrontendAzureDataLake
 		details.Seed.Buckets = len(cfg.Seed.Buckets)
 
 		status := http.StatusOK

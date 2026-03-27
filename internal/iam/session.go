@@ -18,7 +18,6 @@ type sessionStore interface {
 }
 
 type resolverStore interface {
-	storage.AccessKeyStore
 	storage.ServiceAccountLookupStore
 }
 
@@ -116,14 +115,6 @@ func (m SessionManager) ResolveSession(ctx context.Context, token string) (core.
 type Resolver struct {
 	Store          resolverStore
 	SessionManager SessionManager
-}
-
-func (r Resolver) ResolveAccessKey(ctx context.Context, accessKeyID string) (core.Subject, error) {
-	_, err := r.Store.FindAccessKey(ctx, accessKeyID)
-	if err != nil {
-		return core.Subject{}, err
-	}
-	return core.Subject{PrincipalName: accessKeyID}, nil
 }
 
 func (r Resolver) ResolveBearerToken(ctx context.Context, token string) (core.Subject, error) {

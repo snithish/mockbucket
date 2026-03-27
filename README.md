@@ -6,15 +6,17 @@
 [![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
 [![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
 
-A standalone, local object-storage emulator for **S3**, **STS**, **Azure**, and
-**GCS**. Run cloud-compatible workloads on your laptop or inside CI without
-touching a live AWS or GCP account.
+A standalone, local object-storage emulator for **S3**, **STS**, and **GCS**.
+Run cloud-compatible workloads on your laptop or inside CI without touching a
+live AWS or GCP account.
 
 MockBucket persists object bytes on the filesystem and stores metadata in
 SQLite. Authentication and authorization behavior is frontend-specific: S3
-object APIs are open, STS is identity-aware, GCS requires an authenticated
-subject, and Azure supports anonymous requests with optional SharedKey account
-selection.
+object APIs are open, STS is identity-aware, and GCS requires an authenticated
+subject.
+
+Azure support is planned for a future release. Contributions are welcome. For
+now, use the `s3` or `gcs` frontends.
 
 ## Table of Contents
 
@@ -37,7 +39,6 @@ selection.
   - [Access Keys](#access-keys)
   - [Roles](#roles)
   - [GCS Service Credentials](#gcs-service-credentials)
-  - [Azure Accounts](#azure-accounts)
   - [Objects](#objects)
 - [Usage Examples](#usage-examples)
   - [AWS CLI](#aws-cli)
@@ -200,11 +201,12 @@ seed:
 
 ### Frontends
 
-Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime. STS is automatically available when S3 is enabled. Azure frontends are selected via the `type` field:
+Toggle each protocol frontend. S3 and GCS are mutually exclusive at runtime.
+STS is automatically available when S3 is enabled:
 
 ```yaml
 frontends:
-  type: s3              # s3, gcs, azure_blob, azure_datalake
+  type: s3              # s3, gcs
 ```
 
 Supported frontend profiles:
@@ -213,8 +215,10 @@ Supported frontend profiles:
 |----------|----------|
 | `s3` | AWS S3 protocol subset with STS compatibility endpoint (default) |
 | `gcs` | GCS protocol subset with authenticated-subject gating |
-| `azure_blob` | Azure Blob protocol subset (anonymous or account-aware SharedKey mode) |
-| `azure_datalake` | Azure Data Lake Gen2 subset plus Blob-compat bridge operations for SDKs |
+
+Azure is not currently implemented in this repo. If you need Azure-adjacent
+testing today, use the `gcs` or `s3` frontends depending on the client behavior
+you need, and contributions to add Azure support are welcome.
 
 ## Design Caveats
 
@@ -235,21 +239,6 @@ Supported frontend profiles:
 | `s3` | Not required | None for object APIs | Open object/bucket operations |
 | `sts` (with `s3`) | SigV4 header parsed, signature not verified | `AssumeRole` requires seeded role; `allowed_roles` is enforced for known access keys | No trust-policy or action/resource authorization |
 | `gcs` | Required bearer/access token subject | Subject resolved from seeded GCS tokens, seeded service-account tokens, or `/oauth2/v4/token` session issuance | Authenticated subjects are allowed; no bucket/object IAM checks |
-| `azure_blob` | Anonymous allowed; optional `SharedKey` header | `SharedKey` requires known account name; signature is currently not verified | No per-operation authorization checks |
-| `azure_datalake` | Same as `azure_blob` | Same as `azure_blob` | No per-operation authorization checks |
-
-### Azure Data Lake committed support scope
-
-The `azure_datalake` frontend is committed to these SDK-visible behaviors:
-
-- Filesystem operations: list, create, get properties, delete.
-- Path operations: create file, create directory, append, flush, read, head,
-  delete, list.
-- Blob-compatible bridge operations used by the Data Lake SDK:
-  `comp=list`, `restype=container` create/get/head.
-
-Anything outside this scope must return a clear unsupported/not-implemented
-response instead of pretending parity with Azure cloud behavior.
 
 ### Additional caveats
 
@@ -261,14 +250,8 @@ response instead of pretending parity with Azure cloud behavior.
   minimal and frontend-specific.
 - **GCS is authenticated-only.** Bearer/access token subject resolution is
   required, but bucket/object authorization decisions are not evaluated.
-- **Azure SharedKey mode is account-aware, not signature-validating.** The
-  account in `Authorization: SharedKey ...` must exist, but request signatures
-  are not currently verified.
 - **STS auto-enables with S3.** There is no `frontends.sts` config flag. STS is
   available only when `frontends.type: s3`.
-- **Azure uses IP-style URLs.** Like
-  [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url)
-  with `--disableProductStyleUrl`, account name is part of the path.
 
 If you need strict auth verification or full cloud IAM behavior, use a real
 cloud sandbox or another tool. MockBucket focuses on deterministic local
@@ -342,30 +325,6 @@ not currently implement:
 - Object generations and metagenerations
 - Preconditions (`ifGenerationMatch`, `ifMetagenerationMatch`, and variants)
 - Rich object metadata parity (beyond the small metadata subset returned today)
-
-### Azure Accounts
-
-Define Azure storage accounts under `seed.azure.accounts`. Each entry requires a
-`name` and a base64-encoded `key`. MockBucket uses
-[IP-style URLs](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite#ip-style-url)
-like Azurite: account name is parsed from the request path and matched against
-seed data.
-
-```yaml
-seed:
-  azure:
-    accounts:
-      - name: mockstorage
-        key: bW9ja3N0b3JhZ2Uta2V5LTMyYnl0ZXMhIQ==
-```
-
-Point your SDK at the MockBucket endpoint using the account name in the connection string:
-
-```text
-DefaultEndpointsProtocol=http;AccountName=mockstorage;AccountKey=<base64>;BlobEndpoint=http://localhost:9000;EndpointSuffix=core.windows.net
-```
-
-The `azure_blob` and `azure_datalake` frontends are mutually exclusive at runtime (like S3 and GCS). STS is independent and can coexist with either Azure frontend.
 
 ### Objects
 
@@ -518,16 +477,13 @@ internal/
     s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
     sts/                  -- STS wire protocol (AssumeRole)
     gcs/                  -- GCS wire protocol
-    azure_blob/             -- Azure Blob Storage wire protocol
-    azure_datalake/         -- Azure Data Lake Gen2 wire protocol
   httpx/                  -- shared middleware, error mapping, request context
   core/                   -- sentinel errors, domain models
 ```
 
 Object bytes are streamed to the filesystem. Bucket/object metadata, listings,
 multipart state, and session records live in SQLite. S3 object APIs are open;
-STS is identity-aware; GCS requires authenticated subjects; Azure supports
-anonymous mode with optional SharedKey account selection.
+STS is identity-aware; GCS requires authenticated subjects.
 
 ## Testing
 
@@ -561,12 +517,6 @@ uv run scripts/compat/run_all.py test aws
 
 # GCS tests only
 uv run scripts/compat/run_all.py test gcs
-
-# Azure Blob tests only
-uv run scripts/compat/run_all.py test azure_blob
-
-# Azure Data Lake tests only
-uv run scripts/compat/run_all.py test azure_datalake
 
 # Start server for manual testing
 uv run scripts/compat/run_all.py serve
@@ -609,6 +559,10 @@ Releases are automated via GitHub Actions:
 3. Run `make fmt` before committing.
 4. Use the compatibility scripts when touching protocol behavior.
 5. Open a PR against `main`.
+
+Azure support is planned for a future release. If you want to work on it,
+please open a proposal or PR. Until then, prefer the existing `s3` and `gcs`
+frontends.
 
 Please see `plan.md` for the phased implementation roadmap and phase boundaries.
 

@@ -40,7 +40,7 @@ uv run scripts/compat/run_all.py --debug test   # verbose HTTP logging
 - `internal/storage` - persistence (SQLiteStore, FilesystemObjectStore).
 - `internal/iam` - policy evaluation, trust, sessions.
 - `internal/auth/<provider>` - request authentication, SigV4, bearer tokens.
-- `internal/frontends/<provider>` - wire protocol translation (S3, STS, GCS, Azure).
+- `internal/frontends/<provider>` - wire protocol translation (S3, STS, GCS).
 - `internal/httpx` - shared middleware, error mapping, request context.
 - `internal/core` - sentinel errors, domain models.
 - `internal/config` - YAML config loading and validation.
@@ -48,7 +48,6 @@ uv run scripts/compat/run_all.py --debug test   # verbose HTTP logging
 - `internal/server` - HTTP server bootstrap, health endpoints.
 - Seed YAML drives startup state. No runtime admin API in v1.
 - S3 and GCS are mutually exclusive at runtime. STS requires S3.
-- Azure is a disabled scaffold.
 
 ## Code Style
 
@@ -102,7 +101,7 @@ uv run scripts/compat/run_all.py --debug test   # verbose HTTP logging
 ## Constraints
 - Keep diffs minimal and atomic per phase.
 - Every behavior change lands with focused tests.
-- Do not expose GCS/Azure endpoints before their enablement phases.
+- Do not expose new protocol endpoints before their enablement phases.
 - Do not move provider wire logic into `storage` or `iam`.
 - Explicit deny always wins in policy evaluation.
 - Do not revert changes you did not make.

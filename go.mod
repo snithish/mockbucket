@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.2
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9
+	github.com/aws/smithy-go v1.24.2
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.271.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -23,10 +24,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
 	cloud.google.com/go/monitoring v1.24.3 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/storage/azdatalake v1.4.4 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
@@ -43,7 +40,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
-	github.com/aws/smithy-go v1.24.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

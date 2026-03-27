@@ -37,10 +37,8 @@ type FrontendConfig struct {
 type FrontendType string
 
 const (
-	FrontendS3            FrontendType = "s3"
-	FrontendGCS           FrontendType = "gcs"
-	FrontendAzureBlob     FrontendType = "azure_blob"
-	FrontendAzureDataLake FrontendType = "azure_datalake"
+	FrontendS3  FrontendType = "s3"
+	FrontendGCS FrontendType = "gcs"
 )
 
 func Default() Config {
@@ -103,13 +101,13 @@ func (c Config) Validate() error {
 		problems = append(problems, "server.shutdown_timeout must be positive")
 	}
 	if c.Frontends.Type == "" {
-		problems = append(problems, "frontend.type is required (s3, gcs, azure_blob, azure_datalake)")
+		problems = append(problems, "frontend.type is required (s3, gcs)")
 	}
 	switch c.Frontends.Type {
-	case FrontendS3, FrontendGCS, FrontendAzureBlob, FrontendAzureDataLake:
+	case FrontendS3, FrontendGCS:
 		// valid
 	default:
-		problems = append(problems, "frontend.type must be one of: s3, gcs, azure_blob, azure_datalake")
+		problems = append(problems, "frontend.type must be one of: s3, gcs")
 	}
 	if err := c.Seed.Validate(); err != nil {
 		problems = append(problems, fmt.Sprintf("seed: %v", err))
