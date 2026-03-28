@@ -149,14 +149,17 @@ type listBucketsResponse struct {
 }
 
 type objectResponse struct {
-	Kind        string `json:"kind"`
-	Bucket      string `json:"bucket"`
-	Name        string `json:"name"`
-	Size        string `json:"size"`
-	CRC32C      string `json:"crc32c,omitempty"`
-	ETag        string `json:"etag"`
-	TimeCreated string `json:"timeCreated"`
-	Updated     string `json:"updated"`
+	Kind           string `json:"kind"`
+	ID             string `json:"id"`
+	Bucket         string `json:"bucket"`
+	Name           string `json:"name"`
+	Size           string `json:"size"`
+	CRC32C         string `json:"crc32c,omitempty"`
+	ETag           string `json:"etag"`
+	Generation     string `json:"generation"`
+	Metageneration string `json:"metageneration"`
+	TimeCreated    string `json:"timeCreated"`
+	Updated        string `json:"updated"`
 }
 
 type listObjectsResponse struct {
@@ -270,15 +273,7 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 		objects, prefixes := applyDelimiter(objects, prefix, delimiter)
 		resp := listObjectsResponse{Kind: "storage#objects", Prefixes: prefixes}
 		for _, obj := range objects {
-			resp.Items = append(resp.Items, objectResponse{
-				Kind:        "storage#object",
-				Bucket:      obj.Bucket,
-				Name:        obj.Key,
-				Size:        strconv.FormatInt(obj.Size, 10),
-				ETag:        strings.Trim(obj.ETag, "\""),
-				TimeCreated: obj.CreatedAt.UTC().Format(time.RFC3339),
-				Updated:     obj.ModifiedAt.UTC().Format(time.RFC3339),
-			})
+			resp.Items = append(resp.Items, newObjectResponse(obj, ""))
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -290,15 +285,7 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 	}
 	resp := listObjectsResponse{Kind: "storage#objects"}
 	for _, obj := range objects {
-		resp.Items = append(resp.Items, objectResponse{
-			Kind:        "storage#object",
-			Bucket:      obj.Bucket,
-			Name:        obj.Key,
-			Size:        strconv.FormatInt(obj.Size, 10),
-			ETag:        strings.Trim(obj.ETag, "\""),
-			TimeCreated: obj.CreatedAt.UTC().Format(time.RFC3339),
-			Updated:     obj.ModifiedAt.UTC().Format(time.RFC3339),
-		})
+		resp.Items = append(resp.Items, newObjectResponse(obj, ""))
 	}
 	if isTruncated && len(objects) > 0 {
 		resp.NextPageToken = encodePageToken(objects[len(objects)-1].Key)
@@ -463,16 +450,7 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, err)
 		return
 	}
-	resp := objectResponse{
-		Kind:        "storage#object",
-		Bucket:      meta.Bucket,
-		Name:        meta.Key,
-		Size:        strconv.FormatInt(meta.Size, 10),
-		CRC32C:      crc32c,
-		ETag:        strings.Trim(meta.ETag, "\""),
-		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-		Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
-	}
+	resp := newObjectResponse(meta, crc32c)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -541,16 +519,7 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, err)
 		return
 	}
-	resp := objectResponse{
-		Kind:        "storage#object",
-		Bucket:      meta.Bucket,
-		Name:        meta.Key,
-		Size:        strconv.FormatInt(meta.Size, 10),
-		CRC32C:      crc32c,
-		ETag:        strings.Trim(meta.ETag, "\""),
-		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-		Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
-	}
+	resp := newObjectResponse(meta, crc32c)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -573,15 +542,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	if !forceMedia && r.URL.Query().Get("alt") != "media" {
-		resp := objectResponse{
-			Kind:        "storage#object",
-			Bucket:      meta.Bucket,
-			Name:        meta.Key,
-			Size:        strconv.FormatInt(meta.Size, 10),
-			ETag:        strings.Trim(meta.ETag, "\""),
-			TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-			Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
-		}
+		resp := newObjectResponse(meta, "")
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -649,16 +610,7 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		"totalBytesRewritten": strconv.FormatInt(meta.Size, 10),
 		"objectSize":          strconv.FormatInt(meta.Size, 10),
 		"done":                true,
-		"resource": objectResponse{
-			Kind:        "storage#object",
-			Bucket:      meta.Bucket,
-			Name:        meta.Key,
-			Size:        strconv.FormatInt(meta.Size, 10),
-			CRC32C:      crc32c,
-			ETag:        strings.Trim(meta.ETag, "\""),
-			TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-			Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
-		},
+		"resource":            newObjectResponse(meta, crc32c),
 	})
 }
 
@@ -844,18 +796,37 @@ func finalizeResumableUpload(
 	}
 	resumableUploads.Delete(sessionID)
 	_ = os.Remove(upload.Path)
-	resp := objectResponse{
-		Kind:        "storage#object",
-		Bucket:      meta.Bucket,
-		Name:        meta.Key,
-		Size:        strconv.FormatInt(meta.Size, 10),
-		CRC32C:      crc32c,
-		ETag:        strings.Trim(meta.ETag, "\""),
-		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-		Updated:     meta.ModifiedAt.UTC().Format(time.RFC3339),
-	}
+	resp := newObjectResponse(meta, crc32c)
 	writeJSON(w, http.StatusOK, resp)
 	return nil
+}
+
+func newObjectResponse(meta core.ObjectMetadata, crc32c string) objectResponse {
+	generation := objectGeneration(meta)
+	return objectResponse{
+		Kind:           "storage#object",
+		ID:             meta.Bucket + "/" + meta.Key + "/" + generation,
+		Bucket:         meta.Bucket,
+		Name:           meta.Key,
+		Size:           strconv.FormatInt(meta.Size, 10),
+		CRC32C:         crc32c,
+		ETag:           strings.Trim(meta.ETag, "\""),
+		Generation:     generation,
+		Metageneration: "1",
+		TimeCreated:    meta.CreatedAt.UTC().Format(time.RFC3339),
+		Updated:        meta.ModifiedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func objectGeneration(meta core.ObjectMetadata) string {
+	generation := meta.ModifiedAt.UTC().UnixMicro()
+	if generation <= 0 {
+		generation = meta.CreatedAt.UTC().UnixMicro()
+	}
+	if generation <= 0 {
+		generation = 1
+	}
+	return strconv.FormatInt(generation, 10)
 }
 
 func writeResumableIncomplete(w http.ResponseWriter, received int64) {
@@ -924,13 +895,7 @@ func deleteObjectTree(ctx context.Context, deps common.Dependencies, bucket, key
 }
 
 func normalizeDirectoryMarkerKey(key string, contentLength int64) string {
-	if contentLength != 0 || strings.HasSuffix(key, "/") {
-		return key
-	}
-	if pathBase(key) == "_SUCCESS" {
-		return key
-	}
-	return key + "/"
+	return key
 }
 
 func isDirectoryNotEmptyError(err error) bool {
@@ -969,14 +934,6 @@ func pathObject(r *http.Request) (string, error) {
 		return "", nil
 	}
 	return url.PathUnescape(raw)
-}
-
-func pathBase(key string) string {
-	key = strings.TrimSuffix(key, "/")
-	if idx := strings.LastIndex(key, "/"); idx >= 0 {
-		return key[idx+1:]
-	}
-	return key
 }
 
 func resumableUploadLocation(r *http.Request, sessionID string) string {

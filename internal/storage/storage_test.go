@@ -216,6 +216,43 @@ func TestTrailingSlashObjectDoesNotBlockNestedObjects(t *testing.T) {
 	}
 }
 
+func TestObjectDoesNotBlockNestedObjects(t *testing.T) {
+	ctx := context.Background()
+	objects, err := NewFilesystemObjectStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+
+	parentMeta, err := objects.PutObject(ctx, "demo", "compat/pyspark-gcs/run/parquet", bytes.NewBufferString(""))
+	if err != nil {
+		t.Fatalf("PutObject(parent) error = %v", err)
+	}
+	if got := parentMeta.ETag; got != "d41d8cd98f00b204e9800998ecf8427e" {
+		t.Fatalf("parent ETag = %q, want empty md5", got)
+	}
+
+	nestedMeta, err := objects.PutObject(ctx, "demo", "compat/pyspark-gcs/run/parquet/regular/part-0000.parquet", bytes.NewBufferString("data"))
+	if err != nil {
+		t.Fatalf("PutObject(nested) error = %v", err)
+	}
+	if nestedMeta.Size != 4 {
+		t.Fatalf("nested size = %d, want 4", nestedMeta.Size)
+	}
+
+	reader, _, err := objects.OpenObject(ctx, "demo", "compat/pyspark-gcs/run/parquet")
+	if err != nil {
+		t.Fatalf("OpenObject(parent) error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	body := new(bytes.Buffer)
+	if _, err := body.ReadFrom(reader); err != nil {
+		t.Fatalf("ReadFrom(parent) error = %v", err)
+	}
+	if got := body.String(); got != "" {
+		t.Fatalf("parent body = %q, want empty", got)
+	}
+}
+
 func TestListObjectsUsesLiteralPrefix(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from contextlib import contextmanager
 from typing import Any
 
@@ -50,7 +51,7 @@ def s3a_roundtrip(
     bucket: str,
     key_prefix: str,
 ) -> int:
-    """Write and read a parquet dataset through s3a:// and return the row count."""
+    """Run PySpark compatibility checks through s3a:// and return the scenario count."""
     with _spark_session(
         app_name="mockbucket-compat-s3a",
         packages=os.environ.get("MOCKBUCKET_SPARK_S3_PACKAGES", DEFAULT_S3_PACKAGES),
@@ -68,7 +69,7 @@ def s3a_roundtrip(
             "spark.hadoop.fs.s3a.impl.disable.cache": "true",
         },
     ) as spark:
-        return _write_read_verify(
+        return _run_compat_matrix(
             spark,
             f"s3a://{bucket}/{key_prefix}",
         )
@@ -81,7 +82,7 @@ def gcs_roundtrip(
     bucket: str,
     key_prefix: str,
 ) -> int:
-    """Write and read a parquet dataset through gs:// and return the row count."""
+    """Run PySpark compatibility checks through gs:// and return the scenario count."""
     with _spark_session(
         app_name="mockbucket-compat-gcs",
         packages=os.environ.get("MOCKBUCKET_SPARK_GCS_PACKAGES", ""),
@@ -105,7 +106,7 @@ def gcs_roundtrip(
             "spark.hadoop.fs.gs.impl.disable.cache": "true",
         },
     ) as spark:
-        return _write_read_verify(
+        return _run_compat_matrix(
             spark,
             f"gs://{bucket}/{key_prefix}",
         )
@@ -124,25 +125,201 @@ def _spark_session(*, app_name: str, packages: str, jars: str, configs: dict[str
         spark.stop()
 
 
-def _write_read_verify(spark: "SparkSession", base_path: str) -> int:
+def _run_compat_matrix(spark: "SparkSession", base_path: str) -> int:
+    base_path = f"{base_path.rstrip('/')}/run-{uuid.uuid4().hex}"
     frame = spark.createDataFrame(
         [(1, "group-a", "alpha"), (2, "group-a", "beta"), (3, "group-b", "gamma")],
         ["id", "bucket_partition", "value"],
     )
+    append_frame = spark.createDataFrame(
+        [(4, "group-c", "delta"), (5, "group-c", "epsilon")],
+        ["id", "bucket_partition", "value"],
+    )
+    overwrite_frame = spark.createDataFrame(
+        [(10, "group-a", "updated")],
+        ["id", "bucket_partition", "value"],
+    )
+    text_frame = spark.createDataFrame([("alpha",), ("beta",), ("gamma",)], ["value"])
 
+    checks = 0
+    checks += _verify_parquet_write_modes(spark, frame, append_frame, overwrite_frame, f"{base_path}/parquet")
+    checks += _verify_partition_overwrite(spark, frame, overwrite_frame, f"{base_path}/partitioned")
+    checks += _verify_delimited_formats(spark, frame, text_frame, f"{base_path}/formats")
+    checks += _verify_filesystem_ops(spark, text_frame, f"{base_path}/filesystem")
+
+    return checks
+
+
+def _verify_parquet_write_modes(
+    spark: "SparkSession",
+    frame: "DataFrame",
+    append_frame: "DataFrame",
+    overwrite_frame: "DataFrame",
+    base_path: str,
+) -> int:
     regular_path = f"{base_path}/regular"
-    partitioned_path = f"{base_path}/partitioned"
+    ignore_path = f"{base_path}/ignore"
+    error_path = f"{base_path}/error"
 
     frame.repartition(2).write.mode("overwrite").parquet(regular_path)
-    regular_count = spark.read.parquet(regular_path).count()
-    if regular_count != 3:
-        raise RuntimeError(f"regular parquet count={regular_count}, want 3")
+    _assert_rows_equal(
+        spark.read.parquet(regular_path),
+        [(1, "group-a", "alpha"), (2, "group-a", "beta"), (3, "group-b", "gamma")],
+    )
+
+    append_frame.repartition(1).write.mode("append").parquet(regular_path)
+    _assert_rows_equal(
+        spark.read.parquet(regular_path),
+        [
+            (1, "group-a", "alpha"),
+            (2, "group-a", "beta"),
+            (3, "group-b", "gamma"),
+            (4, "group-c", "delta"),
+            (5, "group-c", "epsilon"),
+        ],
+    )
+
+    frame.write.mode("overwrite").parquet(ignore_path)
+    overwrite_frame.write.mode("ignore").parquet(ignore_path)
+    _assert_rows_equal(
+        spark.read.parquet(ignore_path),
+        [(1, "group-a", "alpha"), (2, "group-a", "beta"), (3, "group-b", "gamma")],
+    )
+
+    frame.write.mode("overwrite").parquet(error_path)
+    try:
+        overwrite_frame.write.mode("errorifexists").parquet(error_path)
+    except Exception:
+        pass
+    else:
+        raise RuntimeError("parquet errorifexists write unexpectedly succeeded")
+
+    return 4
+
+
+def _verify_partition_overwrite(
+    spark: "SparkSession",
+    frame: "DataFrame",
+    overwrite_frame: "DataFrame",
+    base_path: str,
+) -> int:
+    partitioned_path = f"{base_path}/parquet"
 
     frame.repartition(2, "bucket_partition").write.mode("overwrite").partitionBy("bucket_partition").parquet(
         partitioned_path
     )
-    partitioned_count = spark.read.parquet(partitioned_path).count()
-    if partitioned_count != 3:
-        raise RuntimeError(f"partitioned parquet count={partitioned_count}, want 3")
+    overwrite_frame.repartition(1).write.mode("overwrite").partitionBy("bucket_partition").parquet(partitioned_path)
 
-    return partitioned_count
+    _assert_rows_equal(
+        spark.read.parquet(partitioned_path),
+        [(10, "group-a", "updated")],
+    )
+
+    fs = _filesystem_for_path(spark, partitioned_path)
+    stale_partition_path = f"{partitioned_path}/bucket_partition=group-b"
+    if _path_exists(fs, stale_partition_path):
+        raise RuntimeError(f"partition overwrite left stale partition behind at {stale_partition_path}")
+
+    return 2
+
+
+def _verify_delimited_formats(
+    spark: "SparkSession",
+    frame: "DataFrame",
+    text_frame: "DataFrame",
+    base_path: str,
+) -> int:
+    csv_path = f"{base_path}/csv"
+    json_path = f"{base_path}/json"
+    text_path = f"{base_path}/text"
+
+    frame.write.mode("overwrite").option("header", "true").csv(csv_path)
+    _assert_rows_equal(
+        spark.read.option("header", "true").option("inferSchema", "true").csv(csv_path),
+        [(1, "group-a", "alpha"), (2, "group-a", "beta"), (3, "group-b", "gamma")],
+    )
+
+    frame.write.mode("overwrite").json(json_path)
+    _assert_rows_equal(
+        spark.read.json(json_path),
+        [(1, "group-a", "alpha"), (2, "group-a", "beta"), (3, "group-b", "gamma")],
+    )
+
+    text_frame.write.mode("overwrite").text(text_path)
+    _assert_single_column_rows(
+        spark.read.text(text_path),
+        ["alpha", "beta", "gamma"],
+    )
+
+    return 3
+
+
+def _verify_filesystem_ops(spark: "SparkSession", text_frame: "DataFrame", base_path: str) -> int:
+    source_path = f"{base_path}/source"
+    target_path = f"{base_path}/renamed"
+
+    text_frame.write.mode("overwrite").text(source_path)
+
+    fs = _filesystem_for_path(spark, source_path)
+    if not _path_exists(fs, source_path):
+        raise RuntimeError(f"filesystem source path is missing: {source_path}")
+
+    statuses = fs.listStatus(_path_for(source_path))
+    if len(statuses) == 0:
+        raise RuntimeError(f"filesystem listStatus returned no entries for {source_path}")
+
+    globbed = fs.globStatus(_path_for(f"{source_path}/part-*"))
+    if not globbed:
+        raise RuntimeError(f"filesystem globStatus returned no matches for {source_path}/part-*")
+
+    if not fs.rename(_path_for(source_path), _path_for(target_path)):
+        raise RuntimeError(f"filesystem rename failed: {source_path} -> {target_path}")
+    if _path_exists(fs, source_path):
+        raise RuntimeError(f"filesystem source path still exists after rename: {source_path}")
+    if not _path_exists(fs, target_path):
+        raise RuntimeError(f"filesystem target path is missing after rename: {target_path}")
+
+    _assert_single_column_rows(
+        spark.read.text(f"{target_path}/part-*"),
+        ["alpha", "beta", "gamma"],
+    )
+
+    if not fs.delete(_path_for(target_path), True):
+        raise RuntimeError(f"filesystem recursive delete failed for {target_path}")
+    if _path_exists(fs, target_path):
+        raise RuntimeError(f"filesystem target path still exists after delete: {target_path}")
+
+    return 5
+
+
+def _assert_rows_equal(frame: "DataFrame", expected: list[tuple[int, str, str]]) -> None:
+    actual = sorted((int(row.id), str(row.bucket_partition), str(row.value)) for row in frame.collect())
+    if actual != sorted(expected):
+        raise RuntimeError(f"rows={actual}, want {sorted(expected)}")
+
+
+def _assert_single_column_rows(frame: "DataFrame", expected: list[str]) -> None:
+    actual = sorted(str(row.value) for row in frame.collect())
+    if actual != sorted(expected):
+        raise RuntimeError(f"rows={actual}, want {sorted(expected)}")
+
+
+def _filesystem_for_path(spark: "SparkSession", path: str):
+    return _path_for(path).getFileSystem(spark._jsc.hadoopConfiguration())
+
+
+def _path_for(path: str):
+    return _spark_jvm().org.apache.hadoop.fs.Path(path)
+
+
+def _spark_jvm():
+    from pyspark import SparkContext
+
+    sc = SparkContext._active_spark_context
+    if sc is None:
+        raise RuntimeError("SparkContext is not initialized")
+    return sc._jvm
+
+
+def _path_exists(fs: Any, path: str) -> bool:
+    return bool(fs.exists(_path_for(path)))

@@ -261,8 +261,10 @@ func TestRegisterRewriteObjectCopiesSource(t *testing.T) {
 	var resp struct {
 		Done     bool `json:"done"`
 		Resource struct {
-			Name string `json:"name"`
-			Size string `json:"size"`
+			Name           string `json:"name"`
+			Size           string `json:"size"`
+			Generation     string `json:"generation"`
+			Metageneration string `json:"metageneration"`
 		} `json:"resource"`
 	}
 	if err := json.NewDecoder(rewriteRec.Body).Decode(&resp); err != nil {
@@ -277,6 +279,12 @@ func TestRegisterRewriteObjectCopiesSource(t *testing.T) {
 	if resp.Resource.Size != "7" {
 		t.Fatalf("resource.size = %q, want %q", resp.Resource.Size, "7")
 	}
+	if resp.Resource.Generation == "" || resp.Resource.Generation == "0" {
+		t.Fatalf("resource.generation = %q, want non-zero", resp.Resource.Generation)
+	}
+	if resp.Resource.Metageneration != "1" {
+		t.Fatalf("resource.metageneration = %q, want %q", resp.Resource.Metageneration, "1")
+	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/storage/v1/b/demo/o/dst.txt?alt=media", nil)
 	getReq.Header.Set("Authorization", "Bearer gcs-token")
@@ -287,6 +295,49 @@ func TestRegisterRewriteObjectCopiesSource(t *testing.T) {
 	}
 	if got := getRec.Body.String(); got != "payload" {
 		t.Fatalf("body = %q, want %q", got, "payload")
+	}
+}
+
+func TestRegisterGetObjectMetadataIncludesGeneration(t *testing.T) {
+	mux, metadata, cleanup := newGCSTestMux(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/demo/o?uploadType=media&name=file.txt", strings.NewReader("payload"))
+	putReq.Header.Set("Authorization", "Bearer gcs-token")
+	putRec := httptest.NewRecorder()
+	mux.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, want %d, body = %q", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/storage/v1/b/demo/o/file.txt", nil)
+	getReq.Header.Set("Authorization", "Bearer gcs-token")
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d, body = %q", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+
+	var resp struct {
+		ID             string `json:"id"`
+		Generation     string `json:"generation"`
+		Metageneration string `json:"metageneration"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if resp.ID == "" {
+		t.Fatal("id is empty")
+	}
+	if resp.Generation == "" || resp.Generation == "0" {
+		t.Fatalf("generation = %q, want non-zero", resp.Generation)
+	}
+	if resp.Metageneration != "1" {
+		t.Fatalf("metageneration = %q, want %q", resp.Metageneration, "1")
 	}
 }
 

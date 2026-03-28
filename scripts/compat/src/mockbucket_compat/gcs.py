@@ -151,17 +151,17 @@ class GCSCompatSuite(CompatSuite):
 
     def _test_pyspark(self) -> int:
         try:
-            count = gcs_roundtrip(
+            scenarios = gcs_roundtrip(
                 endpoint=ENDPOINT,
                 service_account_info=self._fetch_service_account_info(),
                 bucket="compat-demo",
                 key_prefix="pyspark-gcs",
             )
         except Exception as err:
-            fail(f"pyspark gcs parquet - write/read failed: {err}")
+            fail(f"pyspark gcs compatibility - failed: {err}")
             return 1
-        if count != 3:
-            fail(f"pyspark gcs parquet - count={count}, want 3")
+        if scenarios <= 0:
+            fail(f"pyspark gcs compatibility - scenarios={scenarios}, want > 0")
             return 1
-        ok("pyspark gcs parquet")
+        ok("pyspark gcs compatibility")
         return 0

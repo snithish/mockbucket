@@ -263,7 +263,7 @@ class AWSCompatSuite(CompatSuite):
 
     def _test_pyspark(self) -> int:
         try:
-            count = s3a_roundtrip(
+            scenarios = s3a_roundtrip(
                 endpoint=ENDPOINT.removeprefix("http://"),
                 access_key=os.environ["AWS_ACCESS_KEY_ID"],
                 secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
@@ -272,10 +272,10 @@ class AWSCompatSuite(CompatSuite):
                 key_prefix="compat/pyspark",
             )
         except Exception as err:
-            fail(f"pyspark s3a parquet - write/read failed: {err}")
+            fail(f"pyspark s3a compatibility - failed: {err}")
             return 1
-        if count != 3:
-            fail(f"pyspark s3a parquet - count={count}, want 3")
+        if scenarios <= 0:
+            fail(f"pyspark s3a compatibility - scenarios={scenarios}, want > 0")
             return 1
-        ok("pyspark s3a parquet")
+        ok("pyspark s3a compatibility")
         return 0
