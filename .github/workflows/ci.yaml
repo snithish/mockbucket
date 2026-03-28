@@ -14,7 +14,8 @@ jobs:
   gate:
     uses: ./.github/workflows/gate.yaml
     with:
-      run_pyspark: ${{ github.event_name == 'workflow_dispatch' }}
+      run_pyspark: ${{ github.event_name != 'pull_request' }}
+      pyspark_environment: ${{ github.ref == 'refs/heads/main' && 'pyspark-approval' || '' }}
 
   docker-scan:
     needs: gate

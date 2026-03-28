@@ -7,12 +7,19 @@ on:
         required: false
         type: boolean
         default: false
+      pyspark_environment:
+        required: false
+        type: string
+        default: ""
 
 jobs:
   compat:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
       - uses: astral-sh/setup-uv@v5
 
       - name: Build mockbucketd
@@ -22,7 +29,19 @@ jobs:
         run: uv run --project scripts/compat mockbucket-compat test
 
   compat-pyspark:
-    if: ${{ inputs.run_pyspark }}
+    needs:
+      - compat
+      - lint-and-test
+      - pyspark-approval
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        inputs.run_pyspark &&
+        needs.compat.result == 'success' &&
+        needs.lint-and-test.result == 'success' &&
+        (inputs.pyspark_environment == '' || needs.pyspark-approval.result == 'success')
+      }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -54,6 +73,17 @@ jobs:
           MOCKBUCKET_SPARK_S3_PACKAGES: ${{ matrix.cloud == 'aws' && matrix.spark_packages || '' }}
           MOCKBUCKET_SPARK_GCS_PACKAGES: ${{ matrix.cloud == 'gcs' && matrix.spark_packages || '' }}
         run: uv run --project scripts/compat mockbucket-compat test --with-pyspark ${{ matrix.cloud }}
+
+  pyspark-approval:
+    if: ${{ inputs.run_pyspark && inputs.pyspark_environment != '' }}
+    needs:
+      - compat
+      - lint-and-test
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.pyspark_environment }}
+    steps:
+      - name: Await approval
+        run: echo "PySpark compat tests approved"
 
   lint-and-test:
     runs-on: ubuntu-latest
