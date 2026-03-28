@@ -40,7 +40,7 @@ func TestApplyRollsBackOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
 	if err != nil {
 		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
@@ -94,7 +94,7 @@ func TestApplyReconcilesIdentityState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
 	if err != nil {
 		t.Fatalf("NewFilesystemObjectStore() error = %v", err)

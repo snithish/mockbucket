@@ -16,7 +16,7 @@ func TestSessionManagerAssumeRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 	if err := store.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -40,7 +40,7 @@ func TestSessionManagerAssumeRoleRejectsUnknownRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
 	if _, err := manager.AssumeRole(ctx, "nonexistent", "cli", ""); err == nil {
 		t.Fatal("AssumeRole() error = nil, want error for unknown role")
@@ -53,7 +53,7 @@ func TestSessionManagerAssumeRoleHonorsAllowedRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 	if err := store.UpsertRole(ctx, core.Role{Name: "admin"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSessionManagerAssumeRoleOpenWhenNoAllowedRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 	if err := store.UpsertRole(ctx, core.Role{Name: "any-role"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}

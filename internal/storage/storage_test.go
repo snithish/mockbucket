@@ -22,7 +22,7 @@ func TestFilesystemAndSQLiteObjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
@@ -51,7 +51,7 @@ func TestFilesystemAndSQLiteObjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenObject() error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(reader); err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
@@ -67,7 +67,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	if err := metadata.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -90,7 +90,7 @@ func TestAccessKeyAllowedRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 
 	state := SeedState{
 		Roles:      []core.Role{{Name: "reader"}, {Name: "writer"}},
@@ -120,7 +120,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenObject() error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(reader); err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
@@ -206,7 +206,7 @@ func TestTrailingSlashObjectDoesNotBlockNestedObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenObject(marker) error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body := new(bytes.Buffer)
 	if _, err := body.ReadFrom(reader); err != nil {
 		t.Fatalf("ReadFrom(marker) error = %v", err)
@@ -243,7 +243,7 @@ func TestObjectDoesNotBlockNestedObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenObject(parent) error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body := new(bytes.Buffer)
 	if _, err := body.ReadFrom(reader); err != nil {
 		t.Fatalf("ReadFrom(parent) error = %v", err)
@@ -259,7 +259,7 @@ func TestListObjectsUsesLiteralPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
@@ -292,7 +292,7 @@ func TestUpsertServiceAccountUsesClientEmailUniqueness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 
 	first := core.ServiceAccount{
 		Token:       "first-token",
@@ -329,7 +329,7 @@ func TestDeleteBucketRemovesEmptyBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 
 	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
 		t.Fatalf("CreateBucket() error = %v", err)
@@ -348,7 +348,7 @@ func TestDeleteBucketRejectsNonEmptyBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 
 	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
 		t.Fatalf("CreateBucket() error = %v", err)
@@ -376,7 +376,7 @@ func TestSQLiteStoreConcurrentPutObjectDoesNotReturnBusy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite() error = %v", err)
 	}
-	defer func() { _ = metadata.Close() }()
+	defer metadata.Close()
 
 	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
 		t.Fatalf("CreateBucket() error = %v", err)

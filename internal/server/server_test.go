@@ -15,7 +15,7 @@ import (
 
 func TestRuntimeRegistersHealthRoutes(t *testing.T) {
 	runtime := newTestRuntime(t, func(*mbconfig.Config) {})
-	defer func() { _ = runtime.Close() }()
+	defer runtime.Close()
 	for _, path := range []string{"/healthz", "/readyz"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		res := httptest.NewRecorder()

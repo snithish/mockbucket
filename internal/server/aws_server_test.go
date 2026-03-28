@@ -30,7 +30,7 @@ func TestS3FrontendContract(t *testing.T) {
 
 func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 	runtime := newAWSTestRuntime(t)
-	defer func() { _ = runtime.Close() }()
+	defer runtime.Close()
 
 	stsClient := newSTSClient(t, runtime, "admin", "admin-secret", "")
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 
 func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
 	runtime := newAWSTestRuntime(t)
-	defer func() { _ = runtime.Close() }()
+	defer runtime.Close()
 
 	s3Client := newS3Client(t, runtime, "admin", "admin-secret", "")
 	ctx := context.Background()
@@ -79,7 +79,7 @@ func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
 
 func TestS3AWSChunkedPutObject(t *testing.T) {
 	runtime := newAWSTestRuntime(t)
-	defer func() { _ = runtime.Close() }()
+	defer runtime.Close()
 
 	tests := []struct {
 		name     string
@@ -126,7 +126,7 @@ func TestS3AWSChunkedPutObject(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenObject() error = %v", err)
 			}
-			defer func() { _ = out.Close() }()
+			defer out.Close()
 
 			gotBody, err := io.ReadAll(out)
 			if err != nil {
@@ -205,7 +205,7 @@ func (c *s3ContractClient) GetObject(ctx context.Context, bucket, key string) (s
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = out.Body.Close() }()
+	defer out.Body.Close()
 	body, err := io.ReadAll(out.Body)
 	if err != nil {
 		return "", err

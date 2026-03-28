@@ -44,7 +44,7 @@ func main() {
 		logger.Error("bootstrap runtime", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer func() { _ = runtime.Close() }()
+	defer runtime.Close()
 	if err := runtime.Run(ctx); err != nil {
 		logger.Error("run server", slog.Any("error", err))
 		os.Exit(1)
