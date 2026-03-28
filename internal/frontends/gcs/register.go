@@ -7,13 +7,11 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -24,7 +22,6 @@ import (
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
-	"github.com/snithish/mockbucket/internal/httpx"
 	"github.com/snithish/mockbucket/internal/seed"
 )
 
@@ -136,42 +133,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, g
 	})))
 }
 
-type bucketResponse struct {
-	Kind        string `json:"kind"`
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	TimeCreated string `json:"timeCreated"`
-}
-
-type listBucketsResponse struct {
-	Kind  string           `json:"kind"`
-	Items []bucketResponse `json:"items,omitempty"`
-}
-
-type objectResponse struct {
-	Kind           string `json:"kind"`
-	ID             string `json:"id"`
-	Bucket         string `json:"bucket"`
-	Name           string `json:"name"`
-	Size           string `json:"size"`
-	CRC32C         string `json:"crc32c,omitempty"`
-	ETag           string `json:"etag"`
-	Generation     string `json:"generation"`
-	Metageneration string `json:"metageneration"`
-	TimeCreated    string `json:"timeCreated"`
-	Updated        string `json:"updated"`
-}
-
-type listObjectsResponse struct {
-	Kind          string           `json:"kind"`
-	Items         []objectResponse `json:"items,omitempty"`
-	Prefixes      []string         `json:"prefixes,omitempty"`
-	NextPageToken string           `json:"nextPageToken,omitempty"`
-}
-
 func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Dependencies) {
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
 	buckets, err := deps.Metadata.ListBuckets(r.Context())
@@ -181,12 +144,7 @@ func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Depen
 	}
 	resp := listBucketsResponse{Kind: "storage#buckets"}
 	for _, bucket := range buckets {
-		resp.Items = append(resp.Items, bucketResponse{
-			Kind:        "storage#bucket",
-			ID:          bucket.Name,
-			Name:        bucket.Name,
-			TimeCreated: bucket.CreatedAt.UTC().Format(time.RFC3339),
-		})
+		resp.Items = append(resp.Items, newBucketResponse(bucket.Name, bucket.CreatedAt))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -204,49 +162,32 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
 	if err := deps.Metadata.CreateBucket(r.Context(), bucket); err != nil {
 		writeError(w, err)
 		return
 	}
-	resp := bucketResponse{
-		Kind:        "storage#bucket",
-		ID:          bucket,
-		Name:        bucket,
-		TimeCreated: time.Now().UTC().Format(time.RFC3339),
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, newBucketResponse(bucket, time.Now().UTC()))
 }
 
 func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	meta, err := deps.Metadata.GetBucket(r.Context(), bucket)
-	if err != nil {
-		writeError(w, err)
+	meta, ok := loadBucket(w, r, deps, bucket)
+	if !ok {
 		return
 	}
-	resp := bucketResponse{
-		Kind:        "storage#bucket",
-		ID:          meta.Name,
-		Name:        meta.Name,
-		TimeCreated: meta.CreatedAt.UTC().Format(time.RFC3339),
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, newBucketResponse(meta.Name, meta.CreatedAt))
 }
 
 func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
@@ -317,25 +258,14 @@ func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleResumableUploadInit(w http.ResponseWriter, r *http.Request, deps common.Dependencies, resumableUploads *sync.Map, bucket string) {
-	key := strings.TrimSpace(r.URL.Query().Get("name"))
-	if key == "" && r.Body != nil {
-		var metadata struct {
-			Name string `json:"name"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&metadata); err == nil {
-			key = strings.TrimSpace(metadata.Name)
-		}
-	}
-	if key == "" {
-		writeError(w, core.ErrInvalidArgument)
+	key, ok := decodeResumableUploadKey(w, r)
+	if !ok {
 		return
 	}
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
 	sessionID, err := newResumableUploadID()
@@ -389,34 +319,17 @@ func handleResumableUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		return
 	}
 	if !ok {
-		if _, err := appendResumableChunk(upload.Path, 0, r.Body); err != nil {
-			writeError(w, err)
-			return
-		}
-		if err := finalizeResumableUpload(r.Context(), deps, resumableUploads, sessionID, upload, w); err != nil {
+		if err := finalizeUnboundedResumableUpload(r.Context(), deps, resumableUploads, sessionID, upload, r.Body, w); err != nil {
 			writeError(w, err)
 		}
 		return
 	}
-	if rangeSpec.Start != upload.received {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	written, err := appendResumableChunk(upload.Path, rangeSpec.Start, r.Body)
+	complete, err := appendResumableRange(upload, rangeSpec, r.Body)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if written != rangeSpec.End-rangeSpec.Start+1 {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	upload.received += written
-	if rangeSpec.Total >= 0 && upload.received > rangeSpec.Total {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	if rangeSpec.Total < 0 || upload.received < rangeSpec.Total {
+	if !complete {
 		writeResumableIncomplete(w, upload.received)
 		return
 	}
@@ -431,12 +344,10 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
 	key = normalizeDirectoryMarkerKey(key, r.ContentLength)
@@ -445,8 +356,7 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -479,7 +389,7 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 			writeError(w, core.ErrInvalidArgument)
 			return
 		}
-		defer func() { _ = part.Close() }()
+		defer part.Close()
 		partType := part.Header.Get("Content-Type")
 		if i == 0 {
 			if err := json.NewDecoder(part).Decode(&metadata); err != nil {
@@ -501,12 +411,10 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
 	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, media)
@@ -514,8 +422,7 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -528,17 +435,14 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		http.NotFound(w, r)
 		return
 	}
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
-	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
-	if err != nil {
-		writeError(w, err)
+	meta, ok := loadObject(w, r, deps, bucket, key)
+	if !ok {
 		return
 	}
 	if !forceMedia && r.URL.Query().Get("alt") != "media" {
@@ -551,7 +455,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		writeError(w, err)
 		return
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", meta.ETag)
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
@@ -560,12 +464,10 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
 	if err := deleteObjectTree(r.Context(), deps, bucket, key); err != nil {
@@ -576,16 +478,13 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, srcBucket, srcKey, dstBucket, dstKey string) {
-	if !requireAuthenticatedSubject(r) {
-		writeError(w, core.ErrAccessDenied)
+	if !requireAuthenticatedRequest(w, r) {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), srcBucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, srcBucket); !ok {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), dstBucket); err != nil {
-		writeError(w, err)
+	if _, ok := loadBucket(w, r, deps, dstBucket); !ok {
 		return
 	}
 	reader, _, err := deps.Objects.OpenObject(r.Context(), srcBucket, srcKey)
@@ -593,15 +492,14 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		writeError(w, err)
 		return
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 
 	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, dstBucket, dstKey, reader)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), dstBucket, dstKey)
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -612,92 +510,6 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		"done":                true,
 		"resource":            newObjectResponse(meta, crc32c),
 	})
-}
-
-func parseMaxResults(raw string) int {
-	if raw == "" {
-		return 1000
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 1000
-	}
-	if value > 1000 {
-		return 1000
-	}
-	return value
-}
-
-func encodePageToken(lastKey string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(lastKey))
-}
-
-func decodePageToken(token string) (string, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
-func requireAuthenticatedSubject(r *http.Request) bool {
-	return hasAuthenticatedSubject(r)
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeError(w http.ResponseWriter, err error) {
-	status := httpx.StatusCode(err)
-	reason := "backendError"
-	switch status {
-	case http.StatusBadRequest:
-		reason = "invalid"
-	case http.StatusUnauthorized:
-		reason = "required"
-	case http.StatusForbidden:
-		reason = "forbidden"
-	case http.StatusNotFound:
-		reason = "notFound"
-	case http.StatusConflict:
-		reason = "conflict"
-	}
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"code":    status,
-			"message": err.Error(),
-			"errors": []map[string]any{
-				{
-					"message": err.Error(),
-					"domain":  "global",
-					"reason":  reason,
-				},
-			},
-		},
-	})
-}
-
-func rewriteRequest(r *http.Request, rawObject string) (string, string, string, bool) {
-	if r.Method != http.MethodPost {
-		return "", "", "", false
-	}
-	const marker = "/rewriteTo/b/"
-	srcKey, remainder, ok := strings.Cut(rawObject, marker)
-	if !ok {
-		return "", "", "", false
-	}
-	dstBucket, dstPath, ok := strings.Cut(remainder, "/o/")
-	if !ok || strings.TrimSpace(srcKey) == "" || strings.TrimSpace(dstBucket) == "" || strings.TrimSpace(dstPath) == "" {
-		return "", "", "", false
-	}
-	dstKey, err := url.PathUnescape(dstPath)
-	if err != nil {
-		return "", "", "", false
-	}
-	return srcKey, dstBucket, dstKey, true
 }
 
 func putObjectWithCRC32C(ctx context.Context, deps common.Dependencies, bucket, key string, src io.Reader) (core.ObjectMetadata, string, error) {
@@ -760,7 +572,7 @@ func appendResumableChunk(path string, offset int64, body io.Reader) (int64, err
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = file.Close() }()
+	defer file.Close()
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return 0, err
 	}
@@ -769,6 +581,39 @@ func appendResumableChunk(path string, offset int64, body io.Reader) (int64, err
 		return written, err
 	}
 	return written, nil
+}
+
+func appendResumableRange(upload *resumableUpload, rangeSpec resumableContentRange, body io.Reader) (bool, error) {
+	if rangeSpec.Start != upload.received {
+		return false, core.ErrInvalidArgument
+	}
+	written, err := appendResumableChunk(upload.Path, rangeSpec.Start, body)
+	if err != nil {
+		return false, err
+	}
+	if written != rangeSpec.End-rangeSpec.Start+1 {
+		return false, core.ErrInvalidArgument
+	}
+	upload.received += written
+	if rangeSpec.Total >= 0 && upload.received > rangeSpec.Total {
+		return false, core.ErrInvalidArgument
+	}
+	return rangeSpec.Total >= 0 && upload.received == rangeSpec.Total, nil
+}
+
+func finalizeUnboundedResumableUpload(
+	ctx context.Context,
+	deps common.Dependencies,
+	resumableUploads *sync.Map,
+	sessionID string,
+	upload *resumableUpload,
+	body io.Reader,
+	w http.ResponseWriter,
+) error {
+	if _, err := appendResumableChunk(upload.Path, 0, body); err != nil {
+		return err
+	}
+	return finalizeResumableUpload(ctx, deps, resumableUploads, sessionID, upload, w)
 }
 
 func finalizeResumableUpload(
@@ -783,15 +628,14 @@ func finalizeResumableUpload(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = file.Close() }()
+	defer file.Close()
 
 	key := normalizeDirectoryMarkerKey(upload.Key, upload.received)
 	meta, crc32c, err := putObjectWithCRC32C(ctx, deps, upload.Bucket, key, file)
 	if err != nil {
 		return err
 	}
-	if err := deps.Metadata.PutObject(ctx, meta); err != nil {
-		_ = deps.Objects.DeleteObject(ctx, upload.Bucket, key)
+	if err := common.CommitObject(ctx, deps, meta); err != nil {
 		return err
 	}
 	resumableUploads.Delete(sessionID)
@@ -799,23 +643,6 @@ func finalizeResumableUpload(
 	resp := newObjectResponse(meta, crc32c)
 	writeJSON(w, http.StatusOK, resp)
 	return nil
-}
-
-func newObjectResponse(meta core.ObjectMetadata, crc32c string) objectResponse {
-	generation := objectGeneration(meta)
-	return objectResponse{
-		Kind:           "storage#object",
-		ID:             meta.Bucket + "/" + meta.Key + "/" + generation,
-		Bucket:         meta.Bucket,
-		Name:           meta.Key,
-		Size:           strconv.FormatInt(meta.Size, 10),
-		CRC32C:         crc32c,
-		ETag:           strings.Trim(meta.ETag, "\""),
-		Generation:     generation,
-		Metageneration: "1",
-		TimeCreated:    meta.CreatedAt.UTC().Format(time.RFC3339),
-		Updated:        meta.ModifiedAt.UTC().Format(time.RFC3339),
-	}
 }
 
 func objectGeneration(meta core.ObjectMetadata) string {
@@ -829,44 +656,13 @@ func objectGeneration(meta core.ObjectMetadata) string {
 	return strconv.FormatInt(generation, 10)
 }
 
-func writeResumableIncomplete(w http.ResponseWriter, received int64) {
-	if received > 0 {
-		w.Header().Set("Range", fmt.Sprintf("bytes=0-%d", received-1))
-	}
-	w.WriteHeader(http.StatusPermanentRedirect)
-}
-
-func isResumableStatusQuery(r *http.Request) bool {
-	contentRange := strings.TrimSpace(r.Header.Get("Content-Range"))
-	if contentRange == "bytes */0" {
-		return false
-	}
-	if !strings.HasPrefix(contentRange, "bytes */") {
-		return false
-	}
-	if r.ContentLength > 0 {
-		return false
-	}
-	return true
-}
-
-func isZeroByteResumableFinalize(r *http.Request) bool {
-	return strings.TrimSpace(r.Header.Get("Content-Range")) == "bytes */0" && r.ContentLength == 0
-}
-
 func deleteObjectTree(ctx context.Context, deps common.Dependencies, bucket, key string) error {
-	if err := deps.Metadata.DeleteObject(ctx, bucket, key); err != nil && err != core.ErrNotFound {
-		return err
-	}
-	if err := deps.Objects.DeleteObject(ctx, bucket, key); err != nil && err != core.ErrNotFound && !isDirectoryNotEmptyError(err) {
+	if err := common.DeleteObjectIfExists(ctx, deps, bucket, key); err != nil && !isDirectoryNotEmptyError(err) {
 		return err
 	}
 	if !strings.HasSuffix(key, "/") {
 		markerKey := key + "/"
-		if err := deps.Metadata.DeleteObject(ctx, bucket, markerKey); err != nil && err != core.ErrNotFound {
-			return err
-		}
-		if err := deps.Objects.DeleteObject(ctx, bucket, markerKey); err != nil && err != core.ErrNotFound {
+		if err := common.DeleteObjectIfExists(ctx, deps, bucket, markerKey); err != nil {
 			return err
 		}
 	}
@@ -875,19 +671,18 @@ func deleteObjectTree(ctx context.Context, deps common.Dependencies, bucket, key
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
+	after := ""
 	for {
-		objects, err := deps.Metadata.ListObjects(ctx, bucket, prefix, 1000, "")
+		objects, err := deps.Metadata.ListObjects(ctx, bucket, prefix, 1000, after)
 		if err != nil {
 			return err
 		}
 		if len(objects) == 0 {
 			return nil
 		}
+		after = objects[len(objects)-1].Key
 		for _, obj := range objects {
-			if err := deps.Metadata.DeleteObject(ctx, bucket, obj.Key); err != nil && err != core.ErrNotFound {
-				return err
-			}
-			if err := deps.Objects.DeleteObject(ctx, bucket, obj.Key); err != nil && err != core.ErrNotFound {
+			if err := common.DeleteObjectIfExists(ctx, deps, bucket, obj.Key); err != nil {
 				return err
 			}
 		}
@@ -926,14 +721,6 @@ func applyDelimiter(objects []core.ObjectMetadata, prefix, delimiter string) ([]
 		items = append(items, obj)
 	}
 	return items, prefixes
-}
-
-func pathObject(r *http.Request) (string, error) {
-	raw := r.PathValue("object")
-	if raw == "" {
-		return "", nil
-	}
-	return url.PathUnescape(raw)
 }
 
 func resumableUploadLocation(r *http.Request, sessionID string) string {

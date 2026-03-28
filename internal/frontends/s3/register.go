@@ -2,13 +2,10 @@ package s3
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +13,6 @@ import (
 	"github.com/snithish/mockbucket/internal/config"
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
-	"github.com/snithish/mockbucket/internal/httpx"
 )
 
 const xmlNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
@@ -87,25 +83,11 @@ func handleListBuckets(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, err)
 		return
 	}
-	type bucket struct {
-		Name         string `xml:"Name"`
-		CreationDate string `xml:"CreationDate"`
-	}
-	response := struct {
-		XMLName xml.Name `xml:"ListAllMyBucketsResult"`
-		Xmlns   string   `xml:"xmlns,attr"`
-		Owner   struct {
-			ID          string `xml:"ID"`
-			DisplayName string `xml:"DisplayName"`
-		} `xml:"Owner"`
-		Buckets struct {
-			Items []bucket `xml:"Bucket"`
-		} `xml:"Buckets"`
-	}{Xmlns: xmlNamespace}
+	response := listBucketsResult{Xmlns: xmlNamespace}
 	response.Owner.ID = "mockbucket"
 	response.Owner.DisplayName = "mockbucket"
 	for _, item := range buckets {
-		response.Buckets.Items = append(response.Buckets.Items, bucket{Name: item.Name, CreationDate: item.CreatedAt.UTC().Format(time.RFC3339)})
+		response.Buckets.Items = append(response.Buckets.Items, newS3Bucket(item))
 	}
 	writeXML(w, http.StatusOK, response)
 }
@@ -132,12 +114,7 @@ func handleGetBucketLocation(w http.ResponseWriter, r *http.Request, deps common
 		writeBucketError(w, err)
 		return
 	}
-	response := struct {
-		XMLName            xml.Name `xml:"LocationConstraint"`
-		Xmlns              string   `xml:"xmlns,attr"`
-		LocationConstraint string   `xml:",chardata"`
-	}{Xmlns: xmlNamespace, LocationConstraint: "us-east-1"}
-	writeXML(w, http.StatusOK, response)
+	writeXML(w, http.StatusOK, newLocationConstraintResponse())
 }
 
 func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
@@ -158,14 +135,9 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		writeError(w, err)
 		return
 	}
-	defer func() { _ = body.Close() }()
-	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, body)
+	defer body.Close()
+	meta, err := common.StoreObject(r.Context(), deps, bucket, key, body)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
 		writeError(w, err)
 		return
 	}
@@ -174,25 +146,11 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
-	if strings.TrimSpace(key) == "" {
-		http.NotFound(w, r)
+	meta, reader, ok := openObjectForRead(w, r, deps, bucket, key)
+	if !ok {
 		return
 	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeBucketError(w, err)
-		return
-	}
-	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	reader, _, err := deps.Objects.OpenObject(r.Context(), bucket, key)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	setObjectHeaders(w, meta)
 	w.Header().Set("Content-Type", "application/octet-stream")
 
@@ -224,22 +182,8 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 }
 
 func handleHeadObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
-	if strings.TrimSpace(key) == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
-		writeBucketError(w, err)
-		return
-	}
-	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	reader, _, err := deps.Objects.OpenObject(r.Context(), bucket, key)
-	if err != nil {
-		writeError(w, err)
+	meta, reader, ok := openObjectForRead(w, r, deps, bucket, key)
+	if !ok {
 		return
 	}
 	_ = reader.Close()
@@ -256,13 +200,7 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 		writeBucketError(w, err)
 		return
 	}
-	if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil {
-		if err != core.ErrNotFound {
-			writeError(w, err)
-			return
-		}
-	}
-	if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
+	if err := common.DeleteObjectIfExists(r.Context(), deps, bucket, key); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -284,30 +222,15 @@ func handleCopyObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeError(w, err)
 		return
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 
-	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, reader)
+	meta, err := common.StoreObject(r.Context(), deps, bucket, key, reader)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
-		writeError(w, err)
-		return
-	}
 	setObjectHeaders(w, meta)
-	response := struct {
-		XMLName      xml.Name `xml:"CopyObjectResult"`
-		Xmlns        string   `xml:"xmlns,attr"`
-		LastModified string   `xml:"LastModified"`
-		ETag         string   `xml:"ETag"`
-	}{
-		Xmlns:        xmlNamespace,
-		LastModified: meta.ModifiedAt.UTC().Format(time.RFC3339),
-		ETag:         `"` + meta.ETag + `"`,
-	}
-	writeXML(w, http.StatusOK, response)
+	writeXML(w, http.StatusOK, newCopyObjectResult(meta))
 }
 
 func handleDeleteObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
@@ -355,15 +278,7 @@ func handleDeleteObjects(w http.ResponseWriter, r *http.Request, deps common.Dep
 			})
 			continue
 		}
-		if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
-			response.Errors = append(response.Errors, deleteError{
-				Key:     key,
-				Code:    "InternalError",
-				Message: "We encountered an internal error. Please try again.",
-			})
-			continue
-		}
-		if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
+		if err := common.DeleteObjectIfExists(r.Context(), deps, bucket, key); err != nil {
 			response.Errors = append(response.Errors, deleteError{
 				Key:     key,
 				Code:    "InternalError",
@@ -422,19 +337,13 @@ func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeBucketError(w, err)
 		return
 	}
-	uploadID := r.URL.Query().Get("uploadId")
 	partNumber, err := parsePartNumber(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if upload.Bucket != bucket || upload.Key != key {
-		writeError(w, core.ErrInvalidArgument)
+	upload, ok := loadMultipartUpload(w, r, deps, bucket, key)
+	if !ok {
 		return
 	}
 	body, err := decodeStreamingBody(r)
@@ -442,8 +351,8 @@ func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeError(w, err)
 		return
 	}
-	defer func() { _ = body.Close() }()
-	part, err := deps.Objects.PutMultipartPart(r.Context(), uploadID, partNumber, body)
+	defer body.Close()
+	part, err := deps.Objects.PutMultipartPart(r.Context(), upload.UploadID, partNumber, body)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -465,104 +374,32 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 		writeBucketError(w, err)
 		return
 	}
-	uploadID := r.URL.Query().Get("uploadId")
-	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
-	if err != nil {
-		writeError(w, err)
+	upload, ok := loadMultipartUpload(w, r, deps, bucket, key)
+	if !ok {
 		return
 	}
-	if upload.Bucket != bucket || upload.Key != key {
-		writeError(w, core.ErrInvalidArgument)
+	payload, ok := decodeCompleteMultipartUpload(w, r)
+	if !ok {
 		return
 	}
-	var payload struct {
-		XMLName xml.Name `xml:"CompleteMultipartUpload"`
-		Parts   []struct {
-			PartNumber int    `xml:"PartNumber"`
-			ETag       string `xml:"ETag"`
-		} `xml:"Part"`
-	}
-	if err := xml.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, core.ErrInvalidArgument)
+	ordered, ok := resolveMultipartParts(w, r, deps, upload.UploadID, payload)
+	if !ok {
 		return
-	}
-	if payload.XMLName.Local != "CompleteMultipartUpload" {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	if len(payload.Parts) == 0 {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	storedParts, err := deps.Metadata.ListMultipartParts(r.Context(), uploadID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	partByNumber := make(map[int]core.MultipartPart, len(storedParts))
-	for _, part := range storedParts {
-		partByNumber[part.PartNumber] = part
-	}
-	ordered := make([]core.MultipartPart, 0, len(payload.Parts))
-	seen := make(map[int]struct{}, len(payload.Parts))
-	prevPartNumber := 0
-	for _, reqPart := range payload.Parts {
-		if reqPart.PartNumber <= 0 {
-			writeError(w, core.ErrInvalidArgument)
-			return
-		}
-		if reqPart.PartNumber <= prevPartNumber {
-			writeError(w, core.ErrInvalidArgument)
-			return
-		}
-		if _, ok := seen[reqPart.PartNumber]; ok {
-			writeError(w, core.ErrInvalidArgument)
-			return
-		}
-		seen[reqPart.PartNumber] = struct{}{}
-		prevPartNumber = reqPart.PartNumber
-		stored, ok := partByNumber[reqPart.PartNumber]
-		if !ok {
-			writeError(w, core.ErrInvalidArgument)
-			return
-		}
-		if etag := strings.Trim(reqPart.ETag, `"`); etag != "" && etag != stored.ETag {
-			writeError(w, core.ErrInvalidArgument)
-			return
-		}
-		ordered = append(ordered, stored)
 	}
 	meta, err := deps.Objects.CompleteMultipartUpload(r.Context(), bucket, key, ordered)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), uploadID); err != nil {
-		_ = deps.Metadata.DeleteObject(r.Context(), bucket, key)
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+	if err := finalizeMultipartUpload(r.Context(), deps, upload.UploadID, bucket, key); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := deps.Objects.AbortMultipartUpload(r.Context(), uploadID); err != nil && err != core.ErrNotFound {
-		_ = deps.Metadata.DeleteObject(r.Context(), bucket, key)
-		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
-		writeError(w, err)
-		return
-	}
-	response := struct {
-		XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
-		Xmlns    string   `xml:"xmlns,attr"`
-		Location string   `xml:"Location"`
-		Bucket   string   `xml:"Bucket"`
-		Key      string   `xml:"Key"`
-		ETag     string   `xml:"ETag"`
-	}{Xmlns: xmlNamespace, Location: "/" + bucket + "/" + key, Bucket: bucket, Key: key, ETag: `"` + meta.ETag + `"`}
-	writeXML(w, http.StatusOK, response)
+	writeXML(w, http.StatusOK, newCompleteMultipartUploadResult(bucket, key, meta))
 }
 
 func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
@@ -570,21 +407,15 @@ func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps com
 		http.NotFound(w, r)
 		return
 	}
-	uploadID := r.URL.Query().Get("uploadId")
-	upload, err := deps.Metadata.GetMultipartUpload(r.Context(), uploadID)
-	if err != nil {
+	upload, ok := loadMultipartUpload(w, r, deps, bucket, key)
+	if !ok {
+		return
+	}
+	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), upload.UploadID); err != nil {
 		writeError(w, err)
 		return
 	}
-	if upload.Bucket != bucket || upload.Key != key {
-		writeError(w, core.ErrInvalidArgument)
-		return
-	}
-	if err := deps.Metadata.DeleteMultipartUpload(r.Context(), uploadID); err != nil {
-		writeError(w, err)
-		return
-	}
-	_ = deps.Objects.AbortMultipartUpload(r.Context(), uploadID)
+	_ = deps.Objects.AbortMultipartUpload(r.Context(), upload.UploadID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -774,206 +605,4 @@ func collapseListItem(item core.ObjectMetadata, prefix, delimiter string) (strin
 	}
 	commonPrefix := prefix + rest[:idx+len(delimiter)]
 	return commonPrefix, nil, commonPrefix
-}
-
-func hasLocationQuery(r *http.Request) bool {
-	_, ok := r.URL.Query()["location"]
-	return ok
-}
-
-func hasListObjectsV2Query(r *http.Request) bool {
-	return r.URL.Query().Get("list-type") == "2"
-}
-
-func hasUploadsQuery(r *http.Request) bool {
-	_, ok := r.URL.Query()["uploads"]
-	return ok
-}
-
-func hasDeleteQuery(r *http.Request) bool {
-	_, ok := r.URL.Query()["delete"]
-	return ok
-}
-
-func hasUploadIDQuery(r *http.Request) bool {
-	return r.URL.Query().Get("uploadId") != ""
-}
-
-func parseCopySource(raw string) (string, string, error) {
-	trimmed := strings.TrimPrefix(raw, "/")
-	decoded, err := url.PathUnescape(trimmed)
-	if err != nil {
-		return "", "", err
-	}
-	parts := strings.SplitN(decoded, "/", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return "", "", core.ErrInvalidArgument
-	}
-	return parts[0], parts[1], nil
-}
-
-func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {
-	if meta.ETag != "" {
-		w.Header().Set("ETag", "\""+meta.ETag+"\"")
-	}
-	if !meta.ModifiedAt.IsZero() {
-		w.Header().Set("Last-Modified", meta.ModifiedAt.UTC().Format(http.TimeFormat))
-	}
-}
-
-func setObjectHeadersWithLength(w http.ResponseWriter, meta core.ObjectMetadata) {
-	setObjectHeaders(w, meta)
-	if meta.Size >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
-	}
-}
-
-func writeXML(w http.ResponseWriter, status int, payload any) {
-	raw, err := xml.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/xml")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(xml.Header + string(raw)))
-}
-
-func writeError(w http.ResponseWriter, err error) {
-	status, code, message := s3ErrorDetails(err)
-	writeS3Error(w, status, code, message)
-}
-
-func writeBucketError(w http.ResponseWriter, err error) {
-	if err == core.ErrNotFound {
-		writeS3Error(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.")
-		return
-	}
-	writeError(w, err)
-}
-
-func writeS3Error(w http.ResponseWriter, status int, code, message string) {
-	payload := struct {
-		XMLName   xml.Name `xml:"Error"`
-		Code      string   `xml:"Code"`
-		Message   string   `xml:"Message"`
-		RequestID string   `xml:"RequestId"`
-	}{
-		Code:      code,
-		Message:   message,
-		RequestID: "mockbucket",
-	}
-	writeXML(w, status, payload)
-}
-
-func s3ErrorDetails(err error) (int, string, string) {
-	switch {
-	case err == nil:
-		return http.StatusOK, "", ""
-	case err == core.ErrConflict:
-		return http.StatusConflict, "Conflict", err.Error()
-	case err == core.ErrNotFound:
-		return http.StatusNotFound, "NoSuchKey", "The specified key does not exist."
-	case err == core.ErrInvalidArgument:
-		return http.StatusBadRequest, "InvalidArgument", err.Error()
-	case err == core.ErrAccessDenied:
-		return http.StatusForbidden, "AccessDenied", "Access Denied"
-	case err == core.ErrUnauthenticated:
-		return http.StatusUnauthorized, "AccessDenied", "Access Denied"
-	case err == core.ErrExpiredToken:
-		return http.StatusUnauthorized, "ExpiredToken", "The provided token has expired."
-	case err == core.ErrUnsupported:
-		return http.StatusNotImplemented, "NotImplemented", err.Error()
-	default:
-		return httpx.StatusCode(err), "InternalError", err.Error()
-	}
-}
-
-func parseMaxKeys(r *http.Request) (int, error) {
-	raw := r.URL.Query().Get("max-keys")
-	if raw == "" {
-		return 1000, nil
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return 0, core.ErrInvalidArgument
-	}
-	return value, nil
-}
-
-func parsePartNumber(r *http.Request) (int, error) {
-	raw := r.URL.Query().Get("partNumber")
-	if raw == "" {
-		return 0, core.ErrInvalidArgument
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		return 0, core.ErrInvalidArgument
-	}
-	return value, nil
-}
-
-func newUploadID() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
-}
-
-func parseRange(header string, size int64) (int64, int64, error) {
-	if !strings.HasPrefix(header, "bytes=") {
-		return 0, 0, fmt.Errorf("unsupported range unit")
-	}
-	spec := strings.TrimPrefix(header, "bytes=")
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("malformed range: %s", header)
-	}
-
-	startStr, endStr := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-
-	var start, end int64
-	var err error
-
-	switch {
-	case startStr == "" && endStr == "":
-		return 0, 0, fmt.Errorf("malformed range: %s", header)
-	case startStr == "":
-		suffix, err := strconv.ParseInt(endStr, 10, 64)
-		if err != nil || suffix <= 0 {
-			return 0, 0, fmt.Errorf("malformed suffix range")
-		}
-		start = size - suffix
-		if start < 0 {
-			start = 0
-		}
-		end = size - 1
-	case endStr == "":
-		start, err = strconv.ParseInt(startStr, 10, 64)
-		if err != nil || start < 0 {
-			return 0, 0, fmt.Errorf("malformed range start")
-		}
-		end = size - 1
-	default:
-		start, err = strconv.ParseInt(startStr, 10, 64)
-		if err != nil || start < 0 {
-			return 0, 0, fmt.Errorf("malformed range start")
-		}
-		end, err = strconv.ParseInt(endStr, 10, 64)
-		if err != nil || end < 0 {
-			return 0, 0, fmt.Errorf("malformed range end")
-		}
-	}
-
-	if start >= size {
-		return 0, 0, fmt.Errorf("range start %d exceeds size %d", start, size)
-	}
-	if end >= size {
-		end = size - 1
-	}
-	if start > end {
-		return 0, 0, fmt.Errorf("range start %d > end %d", start, end)
-	}
-	return start, end, nil
 }

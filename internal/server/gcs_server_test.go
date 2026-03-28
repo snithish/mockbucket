@@ -30,12 +30,7 @@ func TestGCSFrontendContract(t *testing.T) {
 }
 
 func TestGCSListBucketsRequiresAuthentication(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
-	})
-	t.Cleanup(func() { _ = runtime.Close() })
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
+	_, server := newGCSTestServer(t, nil, nil)
 
 	resp, err := http.Get(server.URL + "/storage/v1/b")
 	if err != nil {
@@ -48,12 +43,7 @@ func TestGCSListBucketsRequiresAuthentication(t *testing.T) {
 }
 
 func TestGCSListBucketsRejectsInvalidBearerToken(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
-	})
-	t.Cleanup(func() { _ = runtime.Close() })
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
+	_, server := newGCSTestServer(t, nil, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/storage/v1/b", nil)
 	req.Header.Set("Authorization", "Bearer invalid")
@@ -68,31 +58,11 @@ func TestGCSListBucketsRejectsInvalidBearerToken(t *testing.T) {
 }
 
 func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSRoleAndAccount(t, runtime, "sa@mock.iam.gserviceaccount.com", "admin", "static-sa-token")
 	})
-	t.Cleanup(func() { _ = runtime.Close() })
 
-	// Create a role for service accounts.
-	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
-		Name: "gcs-service-account",
-	}); err != nil {
-		t.Fatalf("UpsertRole() error = %v", err)
-	}
-
-	// Create a service account for the client.
-	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
-		ClientEmail: "sa@mock.iam.gserviceaccount.com",
-		Principal:   "admin",
-		Token:       "static-sa-token",
-	}); err != nil {
-		t.Fatalf("UpsertServiceAccount() error = %v", err)
-	}
-
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
-
-	// Exchange client credentials for a token.
+	// Exchange client credentials for a bearer token and verify the same token reaches the bucket API.
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", "sa@mock.iam.gserviceaccount.com")
@@ -132,29 +102,11 @@ func TestGCSTokenEndpoint_ClientCredentials(t *testing.T) {
 }
 
 func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSRoleAndAccount(t, runtime, "sa@mock.iam.gserviceaccount.com", "admin", "static-jwt-token")
 	})
-	t.Cleanup(func() { _ = runtime.Close() })
 
-	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{
-		Name: "gcs-service-account",
-	}); err != nil {
-		t.Fatalf("UpsertRole() error = %v", err)
-	}
-	// Create a service account for the client.
-	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
-		ClientEmail: "sa@mock.iam.gserviceaccount.com",
-		Principal:   "admin",
-		Token:       "static-jwt-token",
-	}); err != nil {
-		t.Fatalf("UpsertServiceAccount() error = %v", err)
-	}
-
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
-
-	// Build a JWT assertion with iss claim.
+	// The JWT flow only inspects issuer/audience today, so this checks the emulator accepts SDK-style assertions.
 	claims := `{"iss":"sa@mock.iam.gserviceaccount.com","aud":"` + server.URL + `/oauth2/v4/token"}`
 	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
 	assertion := "eyJhbGciOiJSUzI1NiJ9." + payload + ".fakesig"
@@ -184,12 +136,7 @@ func TestGCSTokenEndpoint_JWTBearer(t *testing.T) {
 }
 
 func TestGCSTokenEndpointFailureModes(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
-	})
-	t.Cleanup(func() { _ = runtime.Close() })
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
+	_, server := newGCSTestServer(t, nil, nil)
 
 	claims := `{"aud":"` + server.URL + `/oauth2/v4/token"}`
 	assertionNoIssuer := "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".fakesig"
@@ -263,21 +210,9 @@ func TestGCSTokenEndpointFailureModes(t *testing.T) {
 }
 
 func TestGCSTokenEndpointFallsBackToSingleServiceAccount(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSServiceAccount(t, runtime, "sa@mock.iam.gserviceaccount.com", "admin", "static-jwt-token")
 	})
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
-		ClientEmail: "sa@mock.iam.gserviceaccount.com",
-		Principal:   "admin",
-		Token:       "static-jwt-token",
-	}); err != nil {
-		t.Fatalf("UpsertServiceAccount() error = %v", err)
-	}
-
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
 
 	claims := `{"iss":"unexpected@mock.iam.gserviceaccount.com","aud":"` + server.URL + `/oauth2/v4/token"}`
 	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
@@ -298,20 +233,11 @@ func TestGCSTokenEndpointFallsBackToSingleServiceAccount(t *testing.T) {
 }
 
 func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSServiceAccount(t, runtime, "flow@mock.iam.gserviceaccount.com", "flow-user", "gcs-flow-token")
 	})
-	t.Cleanup(func() { _ = runtime.Close() })
-	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
-		ClientEmail: "flow@mock.iam.gserviceaccount.com",
-		Principal:   "flow-user",
-		Token:       "gcs-flow-token",
-	}); err != nil {
-		t.Fatalf("UpsertServiceAccount() error = %v", err)
-	}
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
 
+	// This keeps the test at the HTTP layer so bucket creation, upload, metadata lookup, and media download share one auth path.
 	createBucketReq, _ := http.NewRequest(http.MethodPost, server.URL+"/storage/v1/b", strings.NewReader(`{"name":"flow-bucket"}`))
 	createBucketReq.Header.Set("Authorization", "Bearer gcs-flow-token")
 	createBucketReq.Header.Set("Content-Type", "application/json")
@@ -371,7 +297,7 @@ func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
 }
 
 func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+	_, server := newGCSTestServer(t, func(cfg *mbconfig.Config) {
 		cfg.Frontends.Type = config.FrontendGCS
 		cfg.Seed.GCS.ServiceCredentials = []seed.GCSServiceCredSeed{
 			{
@@ -379,10 +305,7 @@ func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
 				Principal:   "custom-principal",
 			},
 		}
-	})
-	t.Cleanup(func() { _ = runtime.Close() })
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
+	}, nil)
 
 	resp, err := http.Get(server.URL + "/api/v1/gcs/service-account")
 	if err != nil {
@@ -487,27 +410,50 @@ type gcsContractClient struct {
 
 func newGCSContractClient(t *testing.T) frontendContractClient {
 	t.Helper()
-	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
-		cfg.Frontends.Type = config.FrontendGCS
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSServiceAccount(t, runtime, "contract@mock.iam.gserviceaccount.com", "admin", "gcs-contract-token")
 	})
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	// Create a service account for static token auth.
-	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
-		ClientEmail: "contract@mock.iam.gserviceaccount.com",
-		Principal:   "admin",
-		Token:       "gcs-contract-token",
-	}); err != nil {
-		t.Fatalf("UpsertServiceAccount() error = %v", err)
-	}
-
-	server := httptest.NewServer(runtime.HTTPServer.Handler)
-	t.Cleanup(server.Close)
 
 	client := newGCSClient(t, server.URL, "gcs-contract-token")
 	t.Cleanup(func() { _ = client.Close() })
 
 	return &gcsContractClient{client: client, endpoint: server.URL, projectID: "mock-project", token: "gcs-contract-token"}
+}
+
+func newGCSTestServer(t *testing.T, configure func(*mbconfig.Config), seed func(*Runtime)) (*Runtime, *httptest.Server) {
+	t.Helper()
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+		if configure != nil {
+			configure(cfg)
+		}
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+	if seed != nil {
+		seed(runtime)
+	}
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+	return runtime, server
+}
+
+func seedGCSRoleAndAccount(t *testing.T, runtime *Runtime, email, principal, token string) {
+	t.Helper()
+	if err := runtime.Metadata.UpsertRole(context.Background(), core.Role{Name: "gcs-service-account"}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+	seedGCSServiceAccount(t, runtime, email, principal, token)
+}
+
+func seedGCSServiceAccount(t *testing.T, runtime *Runtime, email, principal, token string) {
+	t.Helper()
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: email,
+		Principal:   principal,
+		Token:       token,
+	}); err != nil {
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
+	}
 }
 
 func (c *gcsContractClient) CreateBucket(ctx context.Context, bucket string) error {
@@ -565,7 +511,7 @@ func (c *gcsContractClient) GetObject(ctx context.Context, bucket, key string) (
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return "", err
@@ -599,7 +545,7 @@ func (c *gcsContractClient) ListObjects(ctx context.Context, bucket, prefix stri
 	if err != nil {
 		return contractListResult{}, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		return contractListResult{}, fmt.Errorf("list objects failed: status=%d body=%s", resp.StatusCode, string(body))
@@ -659,7 +605,7 @@ func (c *gcsContractClient) MultipartUpload(ctx context.Context, bucket, key str
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("multipart upload failed: status=%d body=%s", resp.StatusCode, string(body))

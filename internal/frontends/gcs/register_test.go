@@ -3,6 +3,7 @@ package gcs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -106,6 +107,7 @@ func TestRegisterUploadTypeResumableReturnsBadRequest(t *testing.T) {
 		t.Fatal("Location header is empty")
 	}
 
+	// The resumable session should answer status probes before any bytes have been committed.
 	statusReq := httptest.NewRequest(http.MethodPut, location, nil)
 	statusReq.Header.Set("Content-Range", "bytes */1")
 	statusRec := httptest.NewRecorder()
@@ -115,6 +117,7 @@ func TestRegisterUploadTypeResumableReturnsBadRequest(t *testing.T) {
 		t.Fatalf("status probe code = %d, want %d", statusRec.Code, http.StatusPermanentRedirect)
 	}
 
+	// A follow-up PUT without Content-Range finalizes the upload in one shot.
 	putReq := httptest.NewRequest(http.MethodPut, location, strings.NewReader("payload"))
 	putRec := httptest.NewRecorder()
 	mux.ServeHTTP(putRec, putReq)
@@ -145,6 +148,7 @@ func TestRegisterResumableUploadSupportsChunkedCompletion(t *testing.T) {
 		t.Fatal("Location header is empty")
 	}
 
+	// The first chunk should remain incomplete and advertise the committed byte range back to the client.
 	firstReq := httptest.NewRequest(http.MethodPut, location, strings.NewReader("abc"))
 	firstReq.Header.Set("Content-Range", "bytes 0-2/6")
 	firstRec := httptest.NewRecorder()
@@ -156,6 +160,7 @@ func TestRegisterResumableUploadSupportsChunkedCompletion(t *testing.T) {
 		t.Fatalf("first chunk Range = %q, want %q", got, "bytes=0-2")
 	}
 
+	// The final chunk should promote the resumable upload into a readable object.
 	secondReq := httptest.NewRequest(http.MethodPut, location, strings.NewReader("def"))
 	secondReq.Header.Set("Content-Range", "bytes 3-5/6")
 	secondRec := httptest.NewRecorder()
@@ -389,6 +394,7 @@ func TestRegisterDeleteObjectRemovesPrefixDescendants(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
+	// GCS-style directory deletes should clear both the marker object and every descendant under that prefix.
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d, body = %q", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
@@ -481,7 +487,48 @@ func TestRegisterListObjectsDelimiterReturnsPrefixes(t *testing.T) {
 	}
 }
 
+func TestDeleteObjectTreeRemovesPagedDescendants(t *testing.T) {
+	deps, metadata, _, cleanup := newGCSTestDeps(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	// This forces recursive delete to advance across more than one metadata page.
+	for i := 0; i < 1005; i++ {
+		key := fmt.Sprintf("tree/file-%04d.txt", i)
+		meta, _, err := putObjectWithCRC32C(ctx, deps, "demo", key, strings.NewReader("payload"))
+		if err != nil {
+			t.Fatalf("putObjectWithCRC32C(%q) error = %v", key, err)
+		}
+		if err := deps.Metadata.PutObject(ctx, meta); err != nil {
+			t.Fatalf("PutObject(metadata, %q) error = %v", key, err)
+		}
+	}
+
+	if err := deleteObjectTree(ctx, deps, "demo", "tree"); err != nil {
+		t.Fatalf("deleteObjectTree() error = %v", err)
+	}
+
+	items, err := metadata.ListObjects(ctx, "demo", "tree", 2000, "")
+	if err != nil {
+		t.Fatalf("ListObjects() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("len(ListObjects()) = %d, want 0", len(items))
+	}
+}
+
 func newGCSTestMux(t *testing.T) (*http.ServeMux, *storage.SQLiteStore, func()) {
+	t.Helper()
+	deps, metadata, _, cleanup := newGCSTestDeps(t)
+	mux := http.NewServeMux()
+	Register(mux, config.Default(), deps, nil)
+	return mux, metadata, cleanup
+}
+
+func newGCSTestDeps(t *testing.T) (common.Dependencies, *storage.SQLiteStore, *storage.FilesystemObjectStore, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
@@ -511,8 +558,5 @@ func newGCSTestMux(t *testing.T) (*http.ServeMux, *storage.SQLiteStore, func()) 
 		AuthResolver:   resolver,
 		SessionManager: resolver.SessionManager,
 	}
-
-	mux := http.NewServeMux()
-	Register(mux, config.Default(), deps, nil)
-	return mux, metadata, func() { _ = metadata.Close() }
+	return deps, metadata, objects, func() { _ = metadata.Close() }
 }

@@ -36,6 +36,7 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 		client := newClient(t)
 		ctx := context.Background()
 
+		// Seed visibility and bucket creation need to behave the same across S3 and GCS clients.
 		listOut, err := client.ListBuckets(ctx)
 		if err != nil {
 			t.Fatalf("ListBuckets() error = %v", err)
@@ -68,6 +69,7 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 		client := newClient(t)
 		ctx := context.Background()
 
+		// Overwrite semantics are part of the emulator contract, not just basic upload/download plumbing.
 		etag, err := client.PutObject(ctx, "demo", "logs/app.log", "hello")
 		if err != nil {
 			t.Fatalf("PutObject() error = %v", err)
@@ -122,6 +124,7 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 	t.Run("ListObjects", func(t *testing.T) {
 		client := newClient(t)
 		ctx := context.Background()
+		// Pagination and cursor semantics are shared behavior that both frontends should expose consistently.
 		for _, key := range []string{
 			"logs/2024-01.txt",
 			"logs/2024-02.txt",
@@ -188,6 +191,7 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 		parts := []string{"hello ", "world"}
 		key := "multipart/data.txt"
 
+		// Multipart completion must materialize a normal object that can be fetched through the same read path.
 		if err := client.MultipartUpload(ctx, "demo", key, parts); err != nil {
 			t.Fatalf("MultipartUpload() error = %v", err)
 		}

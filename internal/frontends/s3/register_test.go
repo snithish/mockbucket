@@ -19,14 +19,9 @@ import (
 )
 
 func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
+	fixture := newS3StoreFixture(t)
 	meta := &failingMetadataStore{bucket: "demo", putErr: errors.New("db down")}
-	deps := common.Dependencies{Metadata: meta, Objects: objects}
+	deps := common.Dependencies{Metadata: meta, Objects: fixture.objects}
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", bytes.NewBufferString("payload"))
 	req.SetPathValue("bucket", "demo")
@@ -38,27 +33,15 @@ func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
-	if _, _, err := objects.OpenObject(ctx, "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
+	// The object bytes must be rolled back when metadata persistence fails.
+	if _, _, err := fixture.objects.OpenObject(fixture.ctx, "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object rollback, got %v", err)
 	}
 }
 
 func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	fixture := newS3StoreFixture(t)
+	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/empty/", strings.NewReader("0;chunk-signature=deadbeef\r\n\r\n"))
 	req.Header.Set("Content-Encoding", "aws-chunked")
@@ -68,17 +51,18 @@ func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
 
 	handlePutObject(rec, req, deps, "demo", "empty/")
 
+	// Empty aws-chunked uploads must still produce a persisted zero-byte object with a stable MD5 ETag.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if got := rec.Header().Get("ETag"); got != "\"d41d8cd98f00b204e9800998ecf8427e\"" {
 		t.Fatalf("ETag = %q, want %q", got, "\"d41d8cd98f00b204e9800998ecf8427e\"")
 	}
-	reader, meta, err := objects.OpenObject(ctx, "demo", "empty/")
+	reader, meta, err := fixture.objects.OpenObject(fixture.ctx, "demo", "empty/")
 	if err != nil {
 		t.Fatalf("OpenObject() error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)
@@ -92,21 +76,8 @@ func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
 }
 
 func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	fixture := newS3StoreFixture(t)
+	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", strings.NewReader("5;chunk-signature=deadbeef\r\nhello\r\n0;chunk-signature=feedface\r\nx-amz-checksum-crc32:AAAAAA==\r\n\r\n"))
 	req.Header.Set("Content-Encoding", "aws-chunked")
@@ -116,17 +87,18 @@ func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
 
 	handlePutObject(rec, req, deps, "demo", "file.txt")
 
+	// This verifies the decoder strips the chunk framing and stores only the reconstructed payload bytes.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if got := rec.Header().Get("ETag"); got != "\"5d41402abc4b2a76b9719d911017c592\"" {
 		t.Fatalf("ETag = %q, want %q", got, "\"5d41402abc4b2a76b9719d911017c592\"")
 	}
-	reader, _, err := objects.OpenObject(ctx, "demo", "file.txt")
+	reader, _, err := fixture.objects.OpenObject(fixture.ctx, "demo", "file.txt")
 	if err != nil {
 		t.Fatalf("OpenObject() error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)
@@ -137,16 +109,12 @@ func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
 }
 
 func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	if _, err := objects.PutObject(context.Background(), "demo", "file.txt", bytes.NewBufferString("payload")); err != nil {
+	fixture := newS3StoreFixture(t)
+	if _, err := fixture.objects.PutObject(fixture.ctx, "demo", "file.txt", bytes.NewBufferString("payload")); err != nil {
 		t.Fatalf("PutObject() error = %v", err)
 	}
 	meta := &failingMetadataStore{bucket: "demo", deleteErr: core.ErrNotFound}
-	deps := common.Dependencies{Metadata: meta, Objects: objects}
+	deps := common.Dependencies{Metadata: meta, Objects: fixture.objects}
 
 	req := httptest.NewRequest(http.MethodDelete, "/demo/file.txt", nil)
 	req.SetPathValue("bucket", "demo")
@@ -158,36 +126,24 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	if _, _, err := objects.OpenObject(context.Background(), "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
+	// S3 delete is idempotent, so a metadata miss should still delete any lingering bytes.
+	if _, _, err := fixture.objects.OpenObject(fixture.ctx, "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object to be deleted, got %v", err)
 	}
 }
 
 func TestDeleteObjectsRemovesExistingAndMissingKeys(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
+	fixture := newS3StoreFixture(t)
 	for _, key := range []string{"compat/pyspark/regular/part-0000", "compat/pyspark/regular/_temporary/0/"} {
-		meta, err := objects.PutObject(ctx, "demo", key, strings.NewReader("payload"))
+		meta, err := fixture.objects.PutObject(fixture.ctx, "demo", key, strings.NewReader("payload"))
 		if err != nil {
 			t.Fatalf("PutObject(%q) error = %v", key, err)
 		}
-		if err := metadata.PutObject(ctx, meta); err != nil {
+		if err := fixture.metadata.PutObject(fixture.ctx, meta); err != nil {
 			t.Fatalf("PutObject(metadata, %q) error = %v", key, err)
 		}
 	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	deps := fixture.deps()
 	body := `<Delete>
   <Object><Key>compat/pyspark/regular/part-0000</Key></Object>
   <Object><Key>compat/pyspark/regular/_temporary/0/</Key></Object>
@@ -216,30 +172,17 @@ func TestDeleteObjectsRemovesExistingAndMissingKeys(t *testing.T) {
 		}
 	}
 	for _, key := range []string{"compat/pyspark/regular/part-0000", "compat/pyspark/regular/_temporary/0/"} {
-		if _, _, err := objects.OpenObject(ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
+		if _, _, err := fixture.objects.OpenObject(fixture.ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("OpenObject(%q) error = %v, want not found", key, err)
 		}
-		if _, err := metadata.GetObject(ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
+		if _, err := fixture.metadata.GetObject(fixture.ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("GetObject(%q) error = %v, want not found", key, err)
 		}
 	}
 }
 
 func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
+	fixture := newS3StoreFixture(t)
 	for _, item := range []struct {
 		key  string
 		body string
@@ -249,15 +192,15 @@ func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
 		{key: "compat/pyspark/regular/part-0001.parquet", body: "b"},
 		{key: "compat/pyspark/partitioned/group=a/file.parquet", body: "c"},
 	} {
-		meta, err := objects.PutObject(ctx, "demo", item.key, strings.NewReader(item.body))
+		meta, err := fixture.objects.PutObject(fixture.ctx, "demo", item.key, strings.NewReader(item.body))
 		if err != nil {
 			t.Fatalf("PutObject(%q) error = %v", item.key, err)
 		}
-		if err := metadata.PutObject(ctx, meta); err != nil {
+		if err := fixture.metadata.PutObject(fixture.ctx, meta); err != nil {
 			t.Fatalf("PutObject(metadata, %q) error = %v", item.key, err)
 		}
 	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodGet, "/demo?list-type=2&prefix=compat/pyspark/&delimiter=/", nil)
 	req.SetPathValue("bucket", "demo")
@@ -265,6 +208,7 @@ func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
 
 	handleListObjectsV2(rec, req, deps, "demo")
 
+	// Delimiter listing should collapse deeper descendants into prefixes instead of returning every leaf object.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -286,28 +230,15 @@ func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
 }
 
 func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
-	srcMeta, err := objects.PutObject(ctx, "demo", "src.txt", strings.NewReader("payload"))
+	fixture := newS3StoreFixture(t)
+	srcMeta, err := fixture.objects.PutObject(fixture.ctx, "demo", "src.txt", strings.NewReader("payload"))
 	if err != nil {
 		t.Fatalf("PutObject(src) error = %v", err)
 	}
-	if err := metadata.PutObject(ctx, srcMeta); err != nil {
+	if err := fixture.metadata.PutObject(fixture.ctx, srcMeta); err != nil {
 		t.Fatalf("PutObject(metadata, src) error = %v", err)
 	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/dst.txt", nil)
 	req.Header.Set("X-Amz-Copy-Source", "/demo/src.txt")
@@ -326,11 +257,11 @@ func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "321c3cf486ed509164edec1e1981fec8") {
 		t.Fatalf("expected copied ETag in response, got %q", rec.Body.String())
 	}
-	reader, _, err := objects.OpenObject(ctx, "demo", "dst.txt")
+	reader, _, err := fixture.objects.OpenObject(fixture.ctx, "demo", "dst.txt")
 	if err != nil {
 		t.Fatalf("OpenObject(dst) error = %v", err)
 	}
-	defer func() { _ = reader.Close() }()
+	defer reader.Close()
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("ReadAll(dst) error = %v", err)
@@ -341,28 +272,15 @@ func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
 }
 
 func TestGetObjectInvalidRangeReturns416(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	defer func() { _ = metadata.Close() }()
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
-	meta, err := objects.PutObject(ctx, "demo", "file.txt", bytes.NewBufferString("hello"))
+	fixture := newS3StoreFixture(t)
+	meta, err := fixture.objects.PutObject(fixture.ctx, "demo", "file.txt", bytes.NewBufferString("hello"))
 	if err != nil {
 		t.Fatalf("PutObject() error = %v", err)
 	}
-	if err := metadata.PutObject(ctx, meta); err != nil {
+	if err := fixture.metadata.PutObject(fixture.ctx, meta); err != nil {
 		t.Fatalf("PutObject(metadata) error = %v", err)
 	}
-	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodGet, "/demo/file.txt", nil)
 	req.Header.Set("Range", "bytes=100-200")
@@ -579,6 +497,35 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	if _, _, err := objects.OpenObject(ctx, "demo", "object.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object rollback, got %v", err)
 	}
+}
+
+type s3StoreFixture struct {
+	ctx      context.Context
+	metadata *storage.SQLiteStore
+	objects  *storage.FilesystemObjectStore
+}
+
+func newS3StoreFixture(t *testing.T) s3StoreFixture {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	t.Cleanup(func() { _ = metadata.Close() })
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	return s3StoreFixture{ctx: ctx, metadata: metadata, objects: objects}
+}
+
+func (f s3StoreFixture) deps() common.Dependencies {
+	return common.Dependencies{Metadata: f.metadata, Objects: f.objects}
 }
 
 type failingMetadataStore struct {
