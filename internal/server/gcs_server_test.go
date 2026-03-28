@@ -262,6 +262,41 @@ func TestGCSTokenEndpointFailureModes(t *testing.T) {
 	}
 }
 
+func TestGCSTokenEndpointFallsBackToSingleServiceAccount(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Frontends.Type = config.FrontendGCS
+	})
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	if err := runtime.Metadata.UpsertServiceAccount(context.Background(), core.ServiceAccount{
+		ClientEmail: "sa@mock.iam.gserviceaccount.com",
+		Principal:   "admin",
+		Token:       "static-jwt-token",
+	}); err != nil {
+		t.Fatalf("UpsertServiceAccount() error = %v", err)
+	}
+
+	server := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(server.Close)
+
+	claims := `{"iss":"unexpected@mock.iam.gserviceaccount.com","aud":"` + server.URL + `/oauth2/v4/token"}`
+	payload := base64.RawURLEncoding.EncodeToString([]byte(claims))
+	assertion := "eyJhbGciOiJSUzI1NiJ9." + payload + ".fakesig"
+
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	form.Set("assertion", assertion)
+	resp, err := http.Post(server.URL+"/oauth2/v4/token", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("POST /oauth2/v4/token error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /oauth2/v4/token status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
 	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
 		cfg.Frontends.Type = config.FrontendGCS
@@ -362,6 +397,14 @@ func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
 		ServiceAccounts []struct {
 			ClientEmail string `json:"client_email"`
 			Principal   string `json:"principal"`
+			SecretJSON  struct {
+				ClientEmail  string `json:"client_email"`
+				ClientID     string `json:"client_id"`
+				PrivateKey   string `json:"private_key"`
+				PrivateKeyID string `json:"private_key_id"`
+				TokenURI     string `json:"token_uri"`
+				Type         string `json:"type"`
+			} `json:"secret_json"`
 		} `json:"service_accounts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -372,6 +415,15 @@ func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
 	}
 	if got, want := payload.ServiceAccounts[0].Principal, "custom-principal"; got != want {
 		t.Fatalf("principal = %q, want %q", got, want)
+	}
+	if got := payload.ServiceAccounts[0].SecretJSON.PrivateKeyID; got == "" {
+		t.Fatal("private_key_id is empty")
+	}
+	if got, want := payload.ServiceAccounts[0].SecretJSON.Type, "service_account"; got != want {
+		t.Fatalf("secret_json.type = %q, want %q", got, want)
+	}
+	if got, want := payload.ServiceAccounts[0].SecretJSON.ClientEmail, "svc-acct@mockbucket.iam.gserviceaccount.com"; got != want {
+		t.Fatalf("secret_json.client_email = %q, want %q", got, want)
 	}
 }
 

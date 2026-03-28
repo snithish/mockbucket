@@ -105,22 +105,30 @@ func TokenEndpoint(resolver iam.Resolver, sessionManager iam.SessionManager) htt
 		// Resolve the client email to verify it maps to a known service account.
 		sa, err := resolver.Store.FindServiceAccountByEmail(r.Context(), clientEmail)
 		if err != nil {
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
-			return
+			serviceAccounts, listErr := resolver.Store.ListServiceAccounts(r.Context())
+			if listErr != nil || len(serviceAccounts) != 1 {
+				http.Error(w, "invalid_client", http.StatusUnauthorized)
+				return
+			}
+			sa = serviceAccounts[0]
 		}
 
-		// Issue a session token using the service account's principal name.
-		// For GCS JWT flow, no STS role assumption needed.
-		session, err := sessionManager.IssueTokenForPrincipal(r.Context(), sa.Principal)
-		if err != nil {
-			http.Error(w, "invalid_client: "+err.Error(), http.StatusUnauthorized)
-			return
+		accessToken := sa.Token
+		if accessToken == "" {
+			// Fall back to issuing a dynamic session only if the seeded service
+			// account does not already expose a bearer token.
+			session, err := sessionManager.IssueTokenForPrincipal(r.Context(), sa.Principal)
+			if err != nil {
+				http.Error(w, "invalid_client: "+err.Error(), http.StatusUnauthorized)
+				return
+			}
+			accessToken = session.Token
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(tokenResponse{
-			AccessToken: session.Token,
+			AccessToken: accessToken,
 			TokenType:   "Bearer",
 			ExpiresIn:   3600,
 		})

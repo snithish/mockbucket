@@ -25,12 +25,13 @@ func RegisterServiceAccountEndpoint(mux *http.ServeMux, accounts []seed.ServiceA
 			"client_email": sa.ClientEmail,
 			"principal":    principal,
 			"secret_json": map[string]any{
-				"type":         sa.Type,
-				"client_email": sa.ClientEmail,
-				"private_key":  sa.PrivateKey,
-				"client_id":    sa.ClientID,
-				"token_uri":    sa.TokenURI,
-				"project_id":   sa.ProjectID,
+				"type":           sa.Type,
+				"client_email":   sa.ClientEmail,
+				"private_key":    sa.PrivateKey,
+				"private_key_id": sa.PrivateKeyID,
+				"client_id":      sa.ClientID,
+				"token_uri":      sa.TokenURI,
+				"project_id":     sa.ProjectID,
 			},
 		})
 	}

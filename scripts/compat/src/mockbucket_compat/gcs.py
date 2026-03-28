@@ -141,6 +141,8 @@ class GCSCompatSuite(CompatSuite):
             fail(f"gcs multipart - content={content!r}, want {data!r}")
             return 1
 
+        blob.delete()
+
         ok("gcs multipart")
         return 0
 
@@ -153,7 +155,7 @@ class GCSCompatSuite(CompatSuite):
                 endpoint=ENDPOINT,
                 service_account_info=self._fetch_service_account_info(),
                 bucket="compat-demo",
-                key_prefix="compat/pyspark",
+                key_prefix="pyspark-gcs",
             )
         except Exception as err:
             fail(f"pyspark gcs parquet - write/read failed: {err}")

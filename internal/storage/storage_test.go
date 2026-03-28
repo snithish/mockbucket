@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,6 +330,61 @@ func TestDeleteBucketRejectsNonEmptyBucket(t *testing.T) {
 
 	if err := metadata.DeleteBucket(ctx, "demo"); err != core.ErrConflict {
 		t.Fatalf("DeleteBucket() error = %v, want %v", err, core.ErrConflict)
+	}
+}
+
+func TestSQLiteStoreConcurrentPutObjectDoesNotReturnBusy(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+
+	if err := metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	metas := []core.ObjectMetadata{
+		{
+			Bucket:     "demo",
+			Key:        "a.txt",
+			Path:       "/tmp/a.txt",
+			Size:       1,
+			ETag:       "etag-a",
+			CreatedAt:  time.Now().UTC(),
+			ModifiedAt: time.Now().UTC(),
+		},
+		{
+			Bucket:     "demo",
+			Key:        "b.txt",
+			Path:       "/tmp/b.txt",
+			Size:       1,
+			ETag:       "etag-b",
+			CreatedAt:  time.Now().UTC(),
+			ModifiedAt: time.Now().UTC(),
+		},
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, len(metas))
+	var wg sync.WaitGroup
+	for _, meta := range metas {
+		wg.Add(1)
+		go func(meta core.ObjectMetadata) {
+			defer wg.Done()
+			<-start
+			errs <- metadata.PutObject(ctx, meta)
+		}(meta)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("PutObject() error = %v", err)
+		}
 	}
 }
 

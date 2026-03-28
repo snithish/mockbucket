@@ -115,6 +115,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &SQLiteStore{db: db}
 	if err := store.initSchema(); err != nil {
 		_ = db.Close()
@@ -234,6 +236,7 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 func (s *SQLiteStore) initSchema() error {
 	statements := []string{
 		`PRAGMA journal_mode=WAL;`,
+		`PRAGMA busy_timeout=5000;`,
 		`CREATE TABLE IF NOT EXISTS buckets (name TEXT PRIMARY KEY, created_at TIMESTAMP NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS objects (
 			bucket TEXT NOT NULL,

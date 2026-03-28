@@ -19,6 +19,7 @@ type sessionStore interface {
 
 type resolverStore interface {
 	storage.ServiceAccountLookupStore
+	storage.ServiceAccountStore
 }
 
 type SessionManager struct {

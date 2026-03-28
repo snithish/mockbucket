@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 DEFAULT_S3_PACKAGES = "org.apache.hadoop:hadoop-aws:3.3.4"
-DEFAULT_GCS_PACKAGES = "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.26"
+DEFAULT_GCS_JARS = (
+    "https://repo1.maven.org/maven2/com/google/cloud/bigdataoss/gcs-connector/"
+    "hadoop3-2.2.26/gcs-connector-hadoop3-2.2.26-shaded.jar"
+)
 
 
 def _base_builder(app_name: str) -> "SparkSession.Builder":
@@ -26,13 +26,18 @@ def _base_builder(app_name: str) -> "SparkSession.Builder":
     ivy_dir = os.environ.get("MOCKBUCKET_SPARK_IVY")
     if ivy_dir:
         builder = builder.config("spark.jars.ivy", ivy_dir)
+    ivy_settings = os.environ.get("MOCKBUCKET_SPARK_IVY_SETTINGS")
+    if ivy_settings:
+        builder = builder.config("spark.jars.ivySettings", ivy_settings)
     return builder
 
 
-def _configured_builder(app_name: str, packages: str) -> "SparkSession.Builder":
+def _configured_builder(app_name: str, packages: str, jars: str = "") -> "SparkSession.Builder":
     builder = _base_builder(app_name)
     if packages:
         builder = builder.config("spark.jars.packages", packages)
+    if jars:
+        builder = builder.config("spark.jars", jars)
     return builder
 
 
@@ -49,6 +54,7 @@ def s3a_roundtrip(
     with _spark_session(
         app_name="mockbucket-compat-s3a",
         packages=os.environ.get("MOCKBUCKET_SPARK_S3_PACKAGES", DEFAULT_S3_PACKAGES),
+        jars="",
         configs={
             "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
             "spark.hadoop.fs.s3a.endpoint": endpoint,
@@ -76,53 +82,38 @@ def gcs_roundtrip(
     key_prefix: str,
 ) -> int:
     """Write and read a parquet dataset through gs:// and return the row count."""
-    keyfile = _write_service_account_file(service_account_info)
-    try:
-        with _spark_session(
-            app_name="mockbucket-compat-gcs",
-            packages=os.environ.get("MOCKBUCKET_SPARK_GCS_PACKAGES", DEFAULT_GCS_PACKAGES),
-            configs={
-                "spark.hadoop.fs.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
-                "spark.hadoop.fs.AbstractFileSystem.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
-                "spark.hadoop.fs.gs.project.id": "mockbucket",
-                "spark.hadoop.fs.gs.auth.service.account.enable": "true",
-                "spark.hadoop.google.cloud.auth.service.account.enable": "true",
-                "spark.hadoop.fs.gs.auth.service.account.json.keyfile": keyfile,
-                "spark.hadoop.google.cloud.auth.service.account.json.keyfile": keyfile,
-                "spark.hadoop.fs.gs.storage.root.url": endpoint,
-                "spark.hadoop.fs.gs.storage.service.path": "/storage/v1/",
-                "spark.hadoop.fs.gs.storage.download.url": f"{endpoint}/download/storage/v1/",
-                "spark.hadoop.fs.gs.storage.upload.url": f"{endpoint}/upload/storage/v1/",
-                "spark.hadoop.fs.gs.impl.disable.cache": "true",
-            },
-        ) as spark:
-            return _write_read_verify(
-                spark,
-                f"gs://{bucket}/{key_prefix}",
-            )
-    finally:
-        Path(keyfile).unlink(missing_ok=True)
-
-
-def _write_service_account_file(service_account_info: dict[str, Any]) -> str:
-    handle = tempfile.NamedTemporaryFile(
-        mode="w",
-        prefix="mockbucket-compat-gcs.",
-        suffix=".json",
-        encoding="utf-8",
-        delete=False,
-    )
-    try:
-        json.dump(service_account_info, handle)
-        handle.flush()
-    finally:
-        handle.close()
-    return handle.name
+    with _spark_session(
+        app_name="mockbucket-compat-gcs",
+        packages=os.environ.get("MOCKBUCKET_SPARK_GCS_PACKAGES", ""),
+        jars=os.environ.get("MOCKBUCKET_SPARK_GCS_JARS", DEFAULT_GCS_JARS),
+        configs={
+            "spark.hadoop.fs.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
+            "spark.hadoop.fs.AbstractFileSystem.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+            "spark.hadoop.fs.gs.project.id": "mockbucket",
+            "spark.hadoop.google.cloud.auth.service.account.enable": "true",
+            "spark.hadoop.google.cloud.auth.service.account.email": service_account_info["client_email"],
+            "spark.hadoop.google.cloud.auth.service.account.private.key.id": service_account_info["private_key_id"],
+            "spark.hadoop.google.cloud.auth.service.account.private.key": service_account_info["private_key"],
+            "spark.hadoop.google.cloud.auth.service.account.json.keyfile": "",
+            "spark.hadoop.google.cloud.auth.service.account.keyfile": "",
+            "spark.hadoop.google.cloud.auth.service.account.enable": "true",
+            "spark.hadoop.google.cloud.token.server.url": service_account_info["token_uri"],
+            "spark.hadoop.fs.gs.storage.root.url": endpoint,
+            "spark.hadoop.fs.gs.storage.service.path": "/storage/v1/",
+            "spark.hadoop.fs.gs.storage.download.url": f"{endpoint}/download/storage/v1/",
+            "spark.hadoop.fs.gs.storage.upload.url": f"{endpoint}/upload/storage/v1/",
+            "spark.hadoop.fs.gs.impl.disable.cache": "true",
+        },
+    ) as spark:
+        return _write_read_verify(
+            spark,
+            f"gs://{bucket}/{key_prefix}",
+        )
 
 
 @contextmanager
-def _spark_session(*, app_name: str, packages: str, configs: dict[str, str]):
-    builder = _configured_builder(app_name, packages)
+def _spark_session(*, app_name: str, packages: str, jars: str, configs: dict[str, str]):
+    builder = _configured_builder(app_name, packages, jars)
     for key, value in configs.items():
         builder = builder.config(key, value)
 
