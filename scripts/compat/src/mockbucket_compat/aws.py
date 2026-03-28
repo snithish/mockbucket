@@ -244,7 +244,7 @@ class AWSCompatSuite(CompatSuite):
     def _test_duckdb(self) -> int:
         rows = 15_000_000
         con = s3_con(
-            endpoint="127.0.0.1:19000",
+            endpoint=ENDPOINT.removeprefix("http://"),
             key_id=os.environ["AWS_ACCESS_KEY_ID"],
             secret=os.environ["AWS_SECRET_ACCESS_KEY"],
             region=os.environ["AWS_REGION"],
@@ -264,7 +264,7 @@ class AWSCompatSuite(CompatSuite):
     def _test_pyspark(self) -> int:
         try:
             count = s3a_roundtrip(
-                endpoint="127.0.0.1:19000",
+                endpoint=ENDPOINT.removeprefix("http://"),
                 access_key=os.environ["AWS_ACCESS_KEY_ID"],
                 secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
                 region=os.environ["AWS_REGION"],

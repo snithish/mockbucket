@@ -178,6 +178,43 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	_ = objects.AbortMultipartUpload(ctx, upload.UploadID)
 }
 
+func TestTrailingSlashObjectDoesNotBlockNestedObjects(t *testing.T) {
+	ctx := context.Background()
+	objects, err := NewFilesystemObjectStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+
+	markerMeta, err := objects.PutObject(ctx, "demo", "compat/pyspark/regular/_temporary/0/", bytes.NewBufferString(""))
+	if err != nil {
+		t.Fatalf("PutObject(marker) error = %v", err)
+	}
+	if got := markerMeta.ETag; got != "d41d8cd98f00b204e9800998ecf8427e" {
+		t.Fatalf("marker ETag = %q, want empty md5", got)
+	}
+
+	nestedMeta, err := objects.PutObject(ctx, "demo", "compat/pyspark/regular/_temporary/0/_temporary/file.parquet", bytes.NewBufferString("data"))
+	if err != nil {
+		t.Fatalf("PutObject(nested) error = %v", err)
+	}
+	if nestedMeta.Size != 4 {
+		t.Fatalf("nested size = %d, want 4", nestedMeta.Size)
+	}
+
+	reader, _, err := objects.OpenObject(ctx, "demo", "compat/pyspark/regular/_temporary/0/")
+	if err != nil {
+		t.Fatalf("OpenObject(marker) error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	body := new(bytes.Buffer)
+	if _, err := body.ReadFrom(reader); err != nil {
+		t.Fatalf("ReadFrom(marker) error = %v", err)
+	}
+	if got := body.String(); got != "" {
+		t.Fatalf("marker body = %q, want empty", got)
+	}
+}
+
 func TestListObjectsUsesLiteralPrefix(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))

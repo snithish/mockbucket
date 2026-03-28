@@ -43,6 +43,99 @@ func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
 	}
 }
 
+func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+
+	req := httptest.NewRequest(http.MethodPut, "/demo/empty/", strings.NewReader("0;chunk-signature=deadbeef\r\n\r\n"))
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "empty/")
+	rec := httptest.NewRecorder()
+
+	handlePutObject(rec, req, deps, "demo", "empty/")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("ETag"); got != "\"d41d8cd98f00b204e9800998ecf8427e\"" {
+		t.Fatalf("ETag = %q, want %q", got, "\"d41d8cd98f00b204e9800998ecf8427e\"")
+	}
+	reader, meta, err := objects.OpenObject(ctx, "demo", "empty/")
+	if err != nil {
+		t.Fatalf("OpenObject() error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got := string(body); got != "" {
+		t.Fatalf("body = %q, want empty", got)
+	}
+	if meta.Size != 0 {
+		t.Fatalf("size = %d, want 0", meta.Size)
+	}
+}
+
+func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+
+	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", strings.NewReader("5;chunk-signature=deadbeef\r\nhello\r\n0;chunk-signature=feedface\r\nx-amz-checksum-crc32:AAAAAA==\r\n\r\n"))
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "file.txt")
+	rec := httptest.NewRecorder()
+
+	handlePutObject(rec, req, deps, "demo", "file.txt")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("ETag"); got != "\"5d41402abc4b2a76b9719d911017c592\"" {
+		t.Fatalf("ETag = %q, want %q", got, "\"5d41402abc4b2a76b9719d911017c592\"")
+	}
+	reader, _, err := objects.OpenObject(ctx, "demo", "file.txt")
+	if err != nil {
+		t.Fatalf("OpenObject() error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got := string(body); got != "hello" {
+		t.Fatalf("body = %q, want %q", got, "hello")
+	}
+}
+
 func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 	dir := t.TempDir()
 	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
@@ -67,6 +160,183 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 	}
 	if _, _, err := objects.OpenObject(context.Background(), "demo", "file.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object to be deleted, got %v", err)
+	}
+}
+
+func TestDeleteObjectsRemovesExistingAndMissingKeys(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	for _, key := range []string{"compat/pyspark/regular/part-0000", "compat/pyspark/regular/_temporary/0/"} {
+		meta, err := objects.PutObject(ctx, "demo", key, strings.NewReader("payload"))
+		if err != nil {
+			t.Fatalf("PutObject(%q) error = %v", key, err)
+		}
+		if err := metadata.PutObject(ctx, meta); err != nil {
+			t.Fatalf("PutObject(metadata, %q) error = %v", key, err)
+		}
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+	body := `<Delete>
+  <Object><Key>compat/pyspark/regular/part-0000</Key></Object>
+  <Object><Key>compat/pyspark/regular/_temporary/0/</Key></Object>
+  <Object><Key>compat/pyspark/regular/missing</Key></Object>
+</Delete>`
+
+	req := httptest.NewRequest(http.MethodPost, "/demo?delete", strings.NewReader(body))
+	req.SetPathValue("bucket", "demo")
+	rec := httptest.NewRecorder()
+
+	handleDeleteObjects(rec, req, deps, "demo")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<DeleteResult") {
+		t.Fatalf("expected DeleteResult XML, got %q", rec.Body.String())
+	}
+	for _, key := range []string{
+		"compat/pyspark/regular/part-0000",
+		"compat/pyspark/regular/_temporary/0/",
+		"compat/pyspark/regular/missing",
+	} {
+		if !strings.Contains(rec.Body.String(), "<Key>"+key+"</Key>") {
+			t.Fatalf("response missing key %q: %q", key, rec.Body.String())
+		}
+	}
+	for _, key := range []string{"compat/pyspark/regular/part-0000", "compat/pyspark/regular/_temporary/0/"} {
+		if _, _, err := objects.OpenObject(ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("OpenObject(%q) error = %v, want not found", key, err)
+		}
+		if _, err := metadata.GetObject(ctx, "demo", key); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("GetObject(%q) error = %v, want not found", key, err)
+		}
+	}
+}
+
+func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	for _, item := range []struct {
+		key  string
+		body string
+	}{
+		{key: "compat/pyspark/regular/_temporary/0/", body: ""},
+		{key: "compat/pyspark/regular/part-0000.parquet", body: "a"},
+		{key: "compat/pyspark/regular/part-0001.parquet", body: "b"},
+		{key: "compat/pyspark/partitioned/group=a/file.parquet", body: "c"},
+	} {
+		meta, err := objects.PutObject(ctx, "demo", item.key, strings.NewReader(item.body))
+		if err != nil {
+			t.Fatalf("PutObject(%q) error = %v", item.key, err)
+		}
+		if err := metadata.PutObject(ctx, meta); err != nil {
+			t.Fatalf("PutObject(metadata, %q) error = %v", item.key, err)
+		}
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+
+	req := httptest.NewRequest(http.MethodGet, "/demo?list-type=2&prefix=compat/pyspark/&delimiter=/", nil)
+	req.SetPathValue("bucket", "demo")
+	rec := httptest.NewRecorder()
+
+	handleListObjectsV2(rec, req, deps, "demo")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<Delimiter>/</Delimiter>") {
+		t.Fatalf("expected delimiter in response, got %q", body)
+	}
+	for _, prefix := range []string{
+		"compat/pyspark/partitioned/",
+		"compat/pyspark/regular/",
+	} {
+		if !strings.Contains(body, "<Prefix>"+prefix+"</Prefix>") {
+			t.Fatalf("expected common prefix %q in response %q", prefix, body)
+		}
+	}
+	if strings.Contains(body, "<Key>compat/pyspark/regular/part-0000.parquet</Key>") {
+		t.Fatalf("expected regular objects to be grouped into CommonPrefixes, got %q", body)
+	}
+}
+
+func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer func() { _ = metadata.Close() }()
+	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
+		t.Fatalf("EnsureBucket() error = %v", err)
+	}
+	srcMeta, err := objects.PutObject(ctx, "demo", "src.txt", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("PutObject(src) error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, srcMeta); err != nil {
+		t.Fatalf("PutObject(metadata, src) error = %v", err)
+	}
+	deps := common.Dependencies{Metadata: metadata, Objects: objects}
+
+	req := httptest.NewRequest(http.MethodPut, "/demo/dst.txt", nil)
+	req.Header.Set("X-Amz-Copy-Source", "/demo/src.txt")
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "dst.txt")
+	rec := httptest.NewRecorder()
+
+	handlePutObject(rec, req, deps, "demo", "dst.txt")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<CopyObjectResult") {
+		t.Fatalf("expected CopyObjectResult XML, got %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "321c3cf486ed509164edec1e1981fec8") {
+		t.Fatalf("expected copied ETag in response, got %q", rec.Body.String())
+	}
+	reader, _, err := objects.OpenObject(ctx, "demo", "dst.txt")
+	if err != nil {
+		t.Fatalf("OpenObject(dst) error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll(dst) error = %v", err)
+	}
+	if got := string(body); got != "payload" {
+		t.Fatalf("dst body = %q, want %q", got, "payload")
 	}
 }
 

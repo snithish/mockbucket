@@ -1,12 +1,14 @@
 package s3
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		switch {
 		case r.Method == http.MethodPut:
 			handleCreateBucket(w, r, deps, bucket)
+		case r.Method == http.MethodPost && hasDeleteQuery(r):
+			handleDeleteObjects(w, r, deps, bucket)
 		case r.Method == http.MethodHead:
 			handleHeadBucket(w, r, deps, bucket)
 		case r.Method == http.MethodGet && hasLocationQuery(r):
@@ -43,6 +47,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 			handleListObjectsV2(w, r, deps, bucket)
 		case key == "" && r.Method == http.MethodGet && hasLocationQuery(r):
 			handleGetBucketLocation(w, r, deps, bucket)
+		case key == "" && r.Method == http.MethodPost && hasDeleteQuery(r):
+			handleDeleteObjects(w, r, deps, bucket)
 		case key == "":
 			http.NotFound(w, r)
 		case r.Method == http.MethodPost && hasUploadsQuery(r):
@@ -143,7 +149,17 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		writeBucketError(w, err)
 		return
 	}
-	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, r.Body)
+	if src := r.Header.Get("X-Amz-Copy-Source"); src != "" {
+		handleCopyObject(w, r, deps, bucket, key, src)
+		return
+	}
+	body, err := decodeStreamingBody(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = body.Close() }()
+	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, body)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -253,6 +269,116 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func handleCopyObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key, copySource string) {
+	srcBucket, srcKey, err := parseCopySource(copySource)
+	if err != nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), srcBucket); err != nil {
+		writeBucketError(w, err)
+		return
+	}
+	reader, _, err := deps.Objects.OpenObject(r.Context(), srcBucket, srcKey)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = reader.Close() }()
+
+	meta, err := deps.Objects.PutObject(r.Context(), bucket, key, reader)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := deps.Metadata.PutObject(r.Context(), meta); err != nil {
+		_ = deps.Objects.DeleteObject(r.Context(), bucket, key)
+		writeError(w, err)
+		return
+	}
+	setObjectHeaders(w, meta)
+	response := struct {
+		XMLName      xml.Name `xml:"CopyObjectResult"`
+		Xmlns        string   `xml:"xmlns,attr"`
+		LastModified string   `xml:"LastModified"`
+		ETag         string   `xml:"ETag"`
+	}{
+		Xmlns:        xmlNamespace,
+		LastModified: meta.ModifiedAt.UTC().Format(time.RFC3339),
+		ETag:         `"` + meta.ETag + `"`,
+	}
+	writeXML(w, http.StatusOK, response)
+}
+
+func handleDeleteObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeBucketError(w, err)
+		return
+	}
+	var payload struct {
+		XMLName xml.Name `xml:"Delete"`
+		Quiet   bool     `xml:"Quiet"`
+		Objects []struct {
+			Key string `xml:"Key"`
+		} `xml:"Object"`
+	}
+	if err := xml.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if payload.XMLName.Local != "Delete" {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+
+	type deleted struct {
+		Key string `xml:"Key"`
+	}
+	type deleteError struct {
+		Key     string `xml:"Key"`
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
+	}
+	response := struct {
+		XMLName xml.Name      `xml:"DeleteResult"`
+		Xmlns   string        `xml:"xmlns,attr"`
+		Deleted []deleted     `xml:"Deleted,omitempty"`
+		Errors  []deleteError `xml:"Error,omitempty"`
+	}{Xmlns: xmlNamespace}
+
+	for _, item := range payload.Objects {
+		key := strings.TrimSpace(item.Key)
+		if key == "" {
+			response.Errors = append(response.Errors, deleteError{
+				Code:    "InvalidArgument",
+				Message: "Invalid argument.",
+			})
+			continue
+		}
+		if err := deps.Metadata.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
+			response.Errors = append(response.Errors, deleteError{
+				Key:     key,
+				Code:    "InternalError",
+				Message: "We encountered an internal error. Please try again.",
+			})
+			continue
+		}
+		if err := deps.Objects.DeleteObject(r.Context(), bucket, key); err != nil && err != core.ErrNotFound {
+			response.Errors = append(response.Errors, deleteError{
+				Key:     key,
+				Code:    "InternalError",
+				Message: "We encountered an internal error. Please try again.",
+			})
+			continue
+		}
+		if !payload.Quiet {
+			response.Deleted = append(response.Deleted, deleted{Key: key})
+		}
+	}
+
+	writeXML(w, http.StatusOK, response)
+}
+
 func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
 	if strings.TrimSpace(key) == "" {
 		http.NotFound(w, r)
@@ -311,7 +437,13 @@ func handleUploadPart(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeError(w, core.ErrInvalidArgument)
 		return
 	}
-	part, err := deps.Objects.PutMultipartPart(r.Context(), uploadID, partNumber, r.Body)
+	body, err := decodeStreamingBody(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = body.Close() }()
+	part, err := deps.Objects.PutMultipartPart(r.Context(), uploadID, partNumber, body)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -467,6 +599,7 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
+	delimiter := r.URL.Query().Get("delimiter")
 	continuation := r.URL.Query().Get("continuation-token")
 	startAfter := r.URL.Query().Get("start-after")
 	after := continuation
@@ -477,23 +610,36 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 		after = r.URL.Query().Get("marker")
 	}
 	objects := []core.ObjectMetadata{}
+	commonPrefixes := []string{}
 	isTruncated := false
 	nextContinuation := ""
 	if maxKeys != 0 {
-		fetchLimit := maxKeys + 1
-		items, err := deps.Metadata.ListObjects(r.Context(), bucket, prefix, fetchLimit, after)
-		if err != nil {
-			writeError(w, err)
-			return
+		if delimiter == "" {
+			fetchLimit := maxKeys + 1
+			items, err := deps.Metadata.ListObjects(r.Context(), bucket, prefix, fetchLimit, after)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			if len(items) > maxKeys {
+				isTruncated = true
+				items = items[:maxKeys]
+			}
+			if isTruncated && len(items) > 0 {
+				nextContinuation = items[len(items)-1].Key
+			}
+			objects = items
+		} else {
+			contents, prefixes, truncated, nextToken, err := listObjectsV2WithDelimiter(r.Context(), deps, bucket, prefix, delimiter, maxKeys, after)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			objects = contents
+			commonPrefixes = prefixes
+			isTruncated = truncated
+			nextContinuation = nextToken
 		}
-		if len(items) > maxKeys {
-			isTruncated = true
-			items = items[:maxKeys]
-		}
-		if isTruncated && len(items) > 0 {
-			nextContinuation = items[len(items)-1].Key
-		}
-		objects = items
 	}
 	type content struct {
 		Key          string `xml:"Key"`
@@ -502,19 +648,24 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 		Size         int64  `xml:"Size"`
 		StorageClass string `xml:"StorageClass"`
 	}
+	type commonPrefix struct {
+		Prefix string `xml:"Prefix"`
+	}
 	response := struct {
-		XMLName               xml.Name  `xml:"ListBucketResult"`
-		Xmlns                 string    `xml:"xmlns,attr"`
-		Name                  string    `xml:"Name"`
-		Prefix                string    `xml:"Prefix,omitempty"`
-		KeyCount              int       `xml:"KeyCount"`
-		MaxKeys               int       `xml:"MaxKeys"`
-		IsTruncated           bool      `xml:"IsTruncated"`
-		Contents              []content `xml:"Contents"`
-		ContinuationToken     string    `xml:"ContinuationToken,omitempty"`
-		NextContinuationToken string    `xml:"NextContinuationToken,omitempty"`
-		StartAfter            string    `xml:"StartAfter,omitempty"`
-	}{Xmlns: xmlNamespace, Name: bucket, Prefix: prefix, KeyCount: len(objects), MaxKeys: maxKeys, IsTruncated: isTruncated}
+		XMLName               xml.Name       `xml:"ListBucketResult"`
+		Xmlns                 string         `xml:"xmlns,attr"`
+		Name                  string         `xml:"Name"`
+		Prefix                string         `xml:"Prefix,omitempty"`
+		Delimiter             string         `xml:"Delimiter,omitempty"`
+		KeyCount              int            `xml:"KeyCount"`
+		MaxKeys               int            `xml:"MaxKeys"`
+		IsTruncated           bool           `xml:"IsTruncated"`
+		Contents              []content      `xml:"Contents"`
+		CommonPrefixes        []commonPrefix `xml:"CommonPrefixes,omitempty"`
+		ContinuationToken     string         `xml:"ContinuationToken,omitempty"`
+		NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
+		StartAfter            string         `xml:"StartAfter,omitempty"`
+	}{Xmlns: xmlNamespace, Name: bucket, Prefix: prefix, Delimiter: delimiter, KeyCount: len(objects) + len(commonPrefixes), MaxKeys: maxKeys, IsTruncated: isTruncated}
 	for _, item := range objects {
 		response.Contents = append(response.Contents, content{
 			Key:          item.Key,
@@ -523,6 +674,9 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 			Size:         item.Size,
 			StorageClass: "STANDARD",
 		})
+	}
+	for _, item := range commonPrefixes {
+		response.CommonPrefixes = append(response.CommonPrefixes, commonPrefix{Prefix: item})
 	}
 	if continuation != "" {
 		response.ContinuationToken = continuation
@@ -534,6 +688,92 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dep
 		response.NextContinuationToken = nextContinuation
 	}
 	writeXML(w, http.StatusOK, response)
+}
+
+func listObjectsV2WithDelimiter(ctx context.Context, deps common.Dependencies, bucket, prefix, delimiter string, maxKeys int, after string) ([]core.ObjectMetadata, []string, bool, string, error) {
+	if delimiter == "" {
+		return nil, nil, false, "", nil
+	}
+
+	type listEntry struct {
+		token  string
+		object *core.ObjectMetadata
+		prefix string
+	}
+
+	var (
+		entries   []listEntry
+		seen      = map[string]struct{}{}
+		cursor    = after
+		truncated bool
+	)
+
+	for {
+		items, err := deps.Metadata.ListObjects(ctx, bucket, prefix, 1000, cursor)
+		if err != nil {
+			return nil, nil, false, "", err
+		}
+		if len(items) == 0 {
+			break
+		}
+		for _, item := range items {
+			token, object, commonPrefix := collapseListItem(item, prefix, delimiter)
+			if token == "" {
+				continue
+			}
+			if _, ok := seen[token]; ok {
+				cursor = item.Key
+				continue
+			}
+			seen[token] = struct{}{}
+			entry := listEntry{token: token, prefix: commonPrefix}
+			if object != nil {
+				copy := *object
+				entry.object = &copy
+			}
+			entries = append(entries, entry)
+			cursor = item.Key
+			if len(entries) > maxKeys {
+				truncated = true
+				break
+			}
+		}
+		if truncated || len(items) < 1000 {
+			break
+		}
+	}
+
+	if truncated {
+		entries = entries[:maxKeys]
+	}
+	nextToken := ""
+	if truncated && len(entries) > 0 {
+		nextToken = entries[len(entries)-1].token
+	}
+
+	objects := make([]core.ObjectMetadata, 0, len(entries))
+	commonPrefixes := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.object != nil {
+			objects = append(objects, *entry.object)
+			continue
+		}
+		commonPrefixes = append(commonPrefixes, entry.prefix)
+	}
+	return objects, commonPrefixes, truncated, nextToken, nil
+}
+
+func collapseListItem(item core.ObjectMetadata, prefix, delimiter string) (string, *core.ObjectMetadata, string) {
+	rest := strings.TrimPrefix(item.Key, prefix)
+	if rest == "" {
+		return item.Key, &item, ""
+	}
+	idx := strings.Index(rest, delimiter)
+	if idx < 0 {
+		return item.Key, &item, ""
+	}
+	commonPrefix := prefix + rest[:idx+len(delimiter)]
+	return commonPrefix, nil, commonPrefix
 }
 
 func hasLocationQuery(r *http.Request) bool {
@@ -550,8 +790,26 @@ func hasUploadsQuery(r *http.Request) bool {
 	return ok
 }
 
+func hasDeleteQuery(r *http.Request) bool {
+	_, ok := r.URL.Query()["delete"]
+	return ok
+}
+
 func hasUploadIDQuery(r *http.Request) bool {
 	return r.URL.Query().Get("uploadId") != ""
+}
+
+func parseCopySource(raw string) (string, string, error) {
+	trimmed := strings.TrimPrefix(raw, "/")
+	decoded, err := url.PathUnescape(trimmed)
+	if err != nil {
+		return "", "", err
+	}
+	parts := strings.SplitN(decoded, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", core.ErrInvalidArgument
+	}
+	return parts[0], parts[1], nil
 }
 
 func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {

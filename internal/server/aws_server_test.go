@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -72,6 +75,76 @@ func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
 		Key:    aws.String("missing-object.txt"),
 	})
 	assertAWSAPIErrorCode(t, err, "NoSuchKey")
+}
+
+func TestS3AWSChunkedPutObject(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer func() { _ = runtime.Close() }()
+
+	tests := []struct {
+		name     string
+		key      string
+		body     string
+		wantBody string
+		wantETag string
+	}{
+		{
+			name:     "EmptyPayload",
+			key:      "compat/pyspark/regular/_temporary/0/",
+			body:     "0;chunk-signature=deadbeef\r\n\r\n",
+			wantBody: "",
+			wantETag: "\"d41d8cd98f00b204e9800998ecf8427e\"",
+		},
+		{
+			name:     "NonEmptyPayload",
+			key:      "compat/pyspark/regular/_temporary/part-0000",
+			body:     "5;chunk-signature=deadbeef\r\nhello\r\n0;chunk-signature=feedface\r\nx-amz-checksum-crc32:AAAAAA==\r\n\r\n",
+			wantBody: "hello",
+			wantETag: "\"5d41402abc4b2a76b9719d911017c592\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "http://mockbucket.local/demo/"+tt.key, strings.NewReader(tt.body))
+			req.Header.Set("Content-Encoding", "aws-chunked")
+			req.Header.Set("X-Amz-Content-Sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD")
+			req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(len(tt.wantBody)))
+			res := httptest.NewRecorder()
+
+			runtime.HTTPServer.Handler.ServeHTTP(res, req)
+
+			if got, want := res.Code, http.StatusOK; got != want {
+				body, _ := io.ReadAll(res.Body)
+				t.Fatalf("status = %d, want %d, body = %q", got, want, string(body))
+			}
+			if got := res.Header().Get("ETag"); got != tt.wantETag {
+				t.Fatalf("ETag = %q, want %q", got, tt.wantETag)
+			}
+
+			out, _, err := runtime.Objects.OpenObject(context.Background(), "demo", tt.key)
+			if err != nil {
+				t.Fatalf("OpenObject() error = %v", err)
+			}
+			defer func() { _ = out.Close() }()
+
+			gotBody, err := io.ReadAll(out)
+			if err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			if got, want := string(gotBody), tt.wantBody; got != want {
+				t.Fatalf("body = %q, want %q", got, want)
+			}
+
+			meta, err := runtime.Metadata.GetObject(context.Background(), "demo", tt.key)
+			if err != nil {
+				t.Fatalf("GetObject(metadata) error = %v", err)
+			}
+			if got, want := `"`+meta.ETag+`"`, tt.wantETag; got != want {
+				t.Fatalf("metadata ETag = %q, want %q", got, want)
+			}
+		})
+	}
 }
 
 type s3ContractClient struct {

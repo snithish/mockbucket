@@ -264,6 +264,7 @@ func (s *FilesystemObjectStore) objectPath(bucket, key string) (string, error) {
 	if strings.TrimSpace(bucket) == "" || strings.TrimSpace(key) == "" {
 		return "", core.ErrInvalidArgument
 	}
+	hasTrailingSlash := strings.HasSuffix(key, "/")
 	segments := strings.Split(key, "/")
 	encoded := make([]string, 0, len(segments)+1)
 	encoded = append(encoded, url.PathEscape(bucket))
@@ -275,6 +276,9 @@ func (s *FilesystemObjectStore) objectPath(bucket, key string) (string, error) {
 			return "", core.ErrInvalidArgument
 		}
 		encoded = append(encoded, url.PathEscape(segment))
+	}
+	if hasTrailingSlash {
+		encoded = append(encoded, ".__mockbucket_dir__")
 	}
 	path := filepath.Join(append([]string{s.rootDir}, encoded...)...)
 	cleanRoot := filepath.Clean(s.rootDir) + string(os.PathSeparator)
