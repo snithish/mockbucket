@@ -27,9 +27,7 @@ help:
 	@printf "  docker    Build the Docker image\n"
 	@printf "  clean     Remove $(BIN_DIR)\n"
 
-build: $(BIN_DIR)/$(BINARY)
-
-$(BIN_DIR)/$(BINARY): $(shell find cmd -maxdepth 2 -name '*.go') go.mod go.sum Makefile
+build:
 	@mkdir -p $(BIN_DIR)
 	@$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) ./cmd/mockbucketd
 
@@ -56,7 +54,7 @@ lint:
 tidy:
 	@$(GO) mod tidy
 
-compat:
+compat: build
 	@uv run --project scripts/compat mockbucket-compat test
 
 docker:
