@@ -43,6 +43,7 @@ now, use the `s3` or `gcs` frontends.
 - [Usage Examples](#usage-examples)
   - [AWS CLI](#aws-cli)
   - [Python (boto3)](#python-boto3)
+  - [Python (google-cloud-storage)](#python-google-cloud-storage)
   - [STS AssumeRole](#sts-assumerole)
 - [Verifying Releases](#verifying-releases)
 - [Architecture](#architecture)
@@ -405,6 +406,40 @@ for item in response.get("Contents", []):
     print(item["Key"])
 ```
 
+### Python (google-cloud-storage)
+
+Switch the frontend to `gcs` in your config, then use the generated service
+account JSON exposed by MockBucket:
+
+```python
+import json
+import urllib.request
+
+from google.cloud import storage
+from google.oauth2 import service_account
+
+ENDPOINT = "http://localhost:9000"
+
+with urllib.request.urlopen(f"{ENDPOINT}/api/v1/gcs/service-account") as resp:
+    payload = json.load(resp)
+
+service_account_info = payload["service_accounts"][0]["secret_json"]
+creds = service_account.Credentials.from_service_account_info(service_account_info)
+
+client = storage.Client(
+    credentials=creds,
+    project="mockbucket",
+    client_options={"api_endpoint": ENDPOINT},
+)
+
+for bucket in client.list_buckets():
+    print(bucket.name)
+
+blob = client.bucket("demo").blob("python/gcs-hello.txt")
+blob.upload_from_string(b"hello from gcs")
+print(blob.download_as_bytes().decode())
+```
+
 ### STS AssumeRole
 
 STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data. Use `allowed_roles` on access keys to restrict which roles each key can assume:
@@ -452,7 +487,7 @@ sha256sum -c checksums.txt
 
 ```sh
 cosign verify \
-  --certificate-identity "https://github.com/snithish/mockbucket/.github/workflows/docker.yaml@refs/tags/v0.1.0" \
+  --certificate-identity "https://github.com/snithish/mockbucket/.github/workflows/release.yaml@refs/tags/v0.1.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   ghcr.io/snithish/mockbucket:v0.1.0
 ```
@@ -563,8 +598,6 @@ Releases are automated via GitHub Actions:
 Azure support is planned for a future release. If you want to work on it,
 please open a proposal or PR. Until then, prefer the existing `s3` and `gcs`
 frontends.
-
-Please see `plan.md` for the phased implementation roadmap and phase boundaries.
 
 ## License
 
