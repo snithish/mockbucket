@@ -1,25 +1,31 @@
 # AGENTS.md - Guide for AI Coding Agents
 
-MockBucket is a standalone object-storage emulator (S3, STS, GCS) built in Go 1.26+.
+MockBucket is a standalone object-storage emulator (S3, STS, GCS) built in Go 1.26.1+.
 
 ## Build / Lint / Test Commands
 
 ```sh
-make build          # go build -o ./bin/mockbucketd ./cmd/mockbucketd
-make run            # ./bin/mockbucketd --config mockbucket.yaml
-make test           # go test ./...
-make fmt            # gofmt -w $(git ls-files '*.go')
-make tidy           # go mod tidy
-make compat         # uv run --project scripts/compat mockbucket-compat test
-make clean          # rm -rf ./bin
+make build          # build ./bin/mockbucketd with version metadata
+make run            # build first, then run ./bin/mockbucketd --config mockbucket.yaml
+make test           # run go test ./...
+make fmt            # run gofmt over tracked Go files
+make fmt-check      # list unformatted Go files and fail if any exist
+make lint           # run go vet ./...
+make tidy           # run go mod tidy
+make compat         # build first, then run the compatibility suite
+make docker         # build the Docker image
+make clean          # remove ./bin
 ```
 
-Run a single package: `go test ./internal/iam`
-Run a single test: `go test ./internal/iam -run TestEvaluatorHonorsExplicitDeny`
-Run a subtest: `go test ./internal/server -run TestS3FrontendContract/BucketLevelAPI`
-Verbose: `go test -v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket`
+Prefer `make` targets over raw tool invocations when a target exists.
 
-**Always run before finishing:** `gofmt -w $(git ls-files '*.go') && go test ./...`
+Run a single package: `make test TEST_ARGS=./internal/iam`
+Run a single test: `make test TEST_ARGS='./internal/iam -run TestEvaluatorHonorsExplicitDeny'`
+Run a subtest: `make test TEST_ARGS='./internal/server -run TestS3FrontendContract/BucketLevelAPI'`
+Verbose: `make test TEST_ARGS='-v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket'`
+Compatibility tests with extra args: `make compat COMPAT_ARGS='--with-pyspark aws gcs'`
+
+**Always run before finishing:** `make fmt && make test`
 
 ## Python
 
