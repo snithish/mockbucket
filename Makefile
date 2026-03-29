@@ -4,6 +4,9 @@ GO := go
 BINARY := mockbucketd
 BIN_DIR := ./bin
 CONFIG ?= mockbucket.yaml
+TEST_ARGS ?= ./...
+COMPAT_ARGS ?=
+DOCKER_IMAGE ?= mockbucketd
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -35,7 +38,7 @@ run: build
 	@$(BIN_DIR)/$(BINARY) --config $(CONFIG)
 
 test:
-	@$(GO) test ./...
+	@$(GO) test $(TEST_ARGS)
 
 fmt:
 	@gofmt -w $$(git ls-files '*.go')
@@ -55,10 +58,10 @@ tidy:
 	@$(GO) mod tidy
 
 compat: build
-	@uv run --project scripts/compat mockbucket-compat test
+	@uv run --project scripts/compat mockbucket-compat test $(COMPAT_ARGS)
 
 docker:
-	@docker build -t mockbucketd .
+	@docker build -t $(DOCKER_IMAGE) .
 
 clean:
 	@rm -rf $(BIN_DIR)

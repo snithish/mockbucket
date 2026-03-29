@@ -66,12 +66,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build for local scan
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v7.0.0
-        with:
-          context: .
-          load: true
-          tags: mockbucket:scan
-          cache-from: type=gha
+        run: make docker DOCKER_IMAGE=mockbucket:scan
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
