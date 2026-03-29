@@ -6,21 +6,53 @@
 [![license](https://img.shields.io/github/license/snithish/mockbucket)](LICENSE)
 [![go version](https://img.shields.io/github/go-mod/go-version/snithish/mockbucket)](go.mod)
 
-A standalone, local object-storage emulator for **S3**, **STS**, and **GCS**.
-Run cloud-compatible workloads on your laptop or inside CI without touching a
-live AWS or GCP account.
+> Fast, deterministic object-storage emulator for S3, STS, and GCS, built for testing, not production.
 
-MockBucket persists object bytes on the filesystem and stores metadata in
-SQLite. Authentication and authorization behavior is frontend-specific: S3
-object APIs are open, STS is identity-aware, and GCS requires an authenticated
-subject.
+MockBucket is a standalone local emulator for cloud object-storage workflows.
+Run integration tests and CI jobs against S3-, STS-, and GCS-compatible
+endpoints without touching live AWS or GCP accounts.
 
-Azure support is planned for a future release. Contributions are welcome. For
-now, use the `s3` or `gcs` frontends.
+Object bytes are stored on the filesystem and metadata lives in SQLite.
+Authentication and authorization behavior is intentionally frontend-specific:
+S3 object APIs are open, STS is identity-aware, and GCS requires an
+authenticated subject.
+
+## Why MockBucket?
+
+Testing cloud storage locally is still painful:
+
+- full cloud environments are slow, flaky, and expensive
+- some local emulators are heavy or non-deterministic in CI
+- auth and identity flows are often missing or hard to control
+
+MockBucket focuses on the local testing path:
+
+- deterministic behavior
+- no cloud dependencies
+- seeded state for buckets, objects, access keys, roles, and tokens
+- real protocol coverage for S3, STS, and GCS
+
+## What Is This?
+
+MockBucket is designed for:
+
+- integration tests
+- CI pipelines
+- local development
+- compatibility testing against real SDKs and CLIs
+
+It currently simulates:
+
+- S3 object-storage workflows
+- STS `AssumeRole` flows alongside S3
+- GCS object-storage workflows
+
+Azure is not implemented in this repository yet. If you need Azure support,
+that is future work rather than a current feature.
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
+- [Quickstart](#quickstart)
   - [Docker](#docker)
   - [Pre-built Binary](#pre-built-binary)
   - [Build from Source](#build-from-source)
@@ -51,11 +83,38 @@ now, use the `s3` or `gcs` frontends.
 - [Contributing](#contributing)
 - [License](#license)
 
-## Quick Start
+## Quickstart
+
+Get a local S3-compatible endpoint running in about 30 seconds:
+
+```sh
+docker run -d \
+  --name mockbucket \
+  -p 9000:9000 \
+  -v mockbucket-data:/var/data \
+  ghcr.io/snithish/mockbucket:latest
+```
+
+That starts MockBucket on `http://localhost:9000` with the default seeded
+`demo` bucket.
+
+Smoke-test it with the AWS CLI:
+
+```sh
+aws --endpoint-url http://localhost:9000 \
+    s3 ls --no-sign-request
+```
+
+If you are working from a source checkout, the shortest local path is:
+
+```sh
+cp mockbucket.example.yaml mockbucket.yaml
+make run
+```
 
 ### Docker
 
-The fastest way to get started. The image is published to GitHub Container Registry.
+The image is published to GitHub Container Registry.
 
 ```sh
 docker run -d \
@@ -66,13 +125,6 @@ docker run -d \
 ```
 
 MockBucket starts on `http://localhost:9000` with a default `demo` bucket.
-
-Test it:
-
-```sh
-aws --endpoint-url http://localhost:9000 \
-    s3 ls --no-sign-request
-```
 
 ### Pre-built Binary
 
@@ -532,17 +584,15 @@ STS is identity-aware; GCS requires authenticated subjects.
 
 ```sh
 make test
-# or
-go test ./...
 ```
 
 ### Run a Single Package or Test
 
 ```sh
-go test ./internal/iam
-go test ./internal/iam -run TestSessionManagerAssumeRole
-go test ./internal/server -run TestS3FrontendContract/BucketLevelAPI
-go test -v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket
+make test TEST_ARGS=./internal/iam
+make test TEST_ARGS='./internal/iam -run TestSessionManagerAssumeRole'
+make test TEST_ARGS='./internal/server -run TestS3FrontendContract/BucketLevelAPI'
+make test TEST_ARGS='-v ./internal/server -run TestSTSAssumeRoleAndSessionCanHeadBucket'
 ```
 
 ### Compatibility Suite
