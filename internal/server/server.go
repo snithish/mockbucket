@@ -85,7 +85,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	mux := http.NewServeMux()
 	registerHealth(mux, cfg, metadata)
 	frontends.Register(mux, cfg, deps, gcsServiceAccounts)
-	handler := httpx.RequestID(httpx.RequestLog(logger, cfg.Server.RequestLog, mux))
+	handler, err := httpx.RequestCapture(logger, cfg.Server.RequestCapture.Enabled, cfg.Server.RequestCapture.Path, mux)
+	if err != nil {
+		return nil, err
+	}
+	handler = httpx.RequestID(httpx.RequestLog(logger, cfg.Server.RequestLog, handler))
 	return &Runtime{
 		Config:        cfg,
 		Logger:        logger,

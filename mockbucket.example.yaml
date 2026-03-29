@@ -1,6 +1,9 @@
 server:
   address: 127.0.0.1:9000
   request_log: true
+  request_capture:
+    enabled: false
+    path: ./var/requests
   shutdown_timeout: 10s
 storage:
   root_dir: ./var/objects

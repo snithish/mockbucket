@@ -25,6 +25,9 @@ func TestLoadResolvesRelativePaths(t *testing.T) {
 	if got, want := cfg.Storage.SQLitePath, filepath.Join(dir, "mockbucket.db"); got != want {
 		t.Fatalf("sqlite path = %q, want %q", got, want)
 	}
+	if got, want := cfg.Server.RequestCapture.Path, filepath.Join(dir, "var/requests"); got != want {
+		t.Fatalf("request capture path = %q, want %q", got, want)
+	}
 }
 
 func TestValidateRejectsInvalidConfig(t *testing.T) {
@@ -67,5 +70,15 @@ func TestValidateRejectsInvalidSeed(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want seed validation error")
+	}
+}
+
+func TestValidateRejectsBlankRequestCapturePathWhenEnabled(t *testing.T) {
+	cfg := Default()
+	cfg.Frontends.Type = FrontendS3
+	cfg.Server.RequestCapture.Enabled = true
+	cfg.Server.RequestCapture.Path = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want request capture validation error")
 	}
 }

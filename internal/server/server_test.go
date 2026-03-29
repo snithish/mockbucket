@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +59,34 @@ func TestParseServerAddress(t *testing.T) {
 		if host != tt.wantHost || port != tt.wantPort {
 			t.Fatalf("parseServerAddress(%q) = (%q, %d), want (%q, %d)", tt.addr, host, port, tt.wantHost, tt.wantPort)
 		}
+	}
+}
+
+func TestRuntimeCapturesRequestsWhenEnabled(t *testing.T) {
+	runtime := newTestRuntime(t, func(cfg *mbconfig.Config) {
+		cfg.Server.RequestCapture.Enabled = true
+		cfg.Server.RequestCapture.Path = filepath.Join(t.TempDir(), "requests")
+	})
+	defer runtime.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/?Action=GetCallerIdentity", strings.NewReader("Action=GetCallerIdentity"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res := httptest.NewRecorder()
+	runtime.HTTPServer.Handler.ServeHTTP(res, req)
+
+	files, err := filepath.Glob(filepath.Join(runtime.Config.Server.RequestCapture.Path, "*.http"))
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	if got, want := len(files), 1; got != want {
+		t.Fatalf("capture files = %d, want %d", got, want)
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if got := string(raw); !strings.Contains(got, "\r\nAction=GetCallerIdentity") {
+		t.Fatalf("capture body missing from %q", got)
 	}
 }
 

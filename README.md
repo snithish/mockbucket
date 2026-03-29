@@ -169,8 +169,14 @@ cp mockbucket.example.yaml mockbucket.yaml
 server:
   address: 127.0.0.1:9000    # listen address
   request_log: true           # log every request
+  request_capture:
+    enabled: false            # write requests to .http files when enabled
+    path: ./var/requests      # destination directory for captured requests
   shutdown_timeout: 10s       # graceful shutdown timeout
 ```
+
+Captured requests are written as one `.http` file per request for manual
+inspection. This feature is enabled only through the YAML config.
 
 ### Storage
 

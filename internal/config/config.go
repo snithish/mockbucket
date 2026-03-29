@@ -20,9 +20,15 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Address         string        `yaml:"address"`
-	RequestLog      bool          `yaml:"request_log"`
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	Address         string               `yaml:"address"`
+	RequestLog      bool                 `yaml:"request_log"`
+	RequestCapture  RequestCaptureConfig `yaml:"request_capture"`
+	ShutdownTimeout time.Duration        `yaml:"shutdown_timeout"`
+}
+
+type RequestCaptureConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Path    string `yaml:"path"`
 }
 
 type StorageConfig struct {
@@ -46,6 +52,7 @@ func Default() Config {
 		Server: ServerConfig{
 			Address:         "127.0.0.1:9000",
 			RequestLog:      true,
+			RequestCapture:  RequestCaptureConfig{Path: "./var/requests"},
 			ShutdownTimeout: 10 * time.Second,
 		},
 		Storage: StorageConfig{
@@ -84,6 +91,9 @@ func (c *Config) resolveRelativePaths(baseDir string) {
 	if !filepath.IsAbs(c.Storage.SQLitePath) {
 		c.Storage.SQLitePath = filepath.Clean(filepath.Join(baseDir, c.Storage.SQLitePath))
 	}
+	if c.Server.RequestCapture.Path != "" && !filepath.IsAbs(c.Server.RequestCapture.Path) {
+		c.Server.RequestCapture.Path = filepath.Clean(filepath.Join(baseDir, c.Server.RequestCapture.Path))
+	}
 }
 
 func (c Config) Validate() error {
@@ -100,14 +110,17 @@ func (c Config) Validate() error {
 	if c.Server.ShutdownTimeout <= 0 {
 		problems = append(problems, "server.shutdown_timeout must be positive")
 	}
+	if c.Server.RequestCapture.Enabled && strings.TrimSpace(c.Server.RequestCapture.Path) == "" {
+		problems = append(problems, "server.request_capture.path is required when request capture is enabled")
+	}
 	if c.Frontends.Type == "" {
-		problems = append(problems, "frontend.type is required (s3, gcs)")
+		problems = append(problems, "frontends.type is required (s3, gcs)")
 	}
 	switch c.Frontends.Type {
 	case FrontendS3, FrontendGCS:
 		// valid
 	default:
-		problems = append(problems, "frontend.type must be one of: s3, gcs")
+		problems = append(problems, "frontends.type must be one of: s3, gcs")
 	}
 	if err := c.Seed.Validate(); err != nil {
 		problems = append(problems, fmt.Sprintf("seed: %v", err))
