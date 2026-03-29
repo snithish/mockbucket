@@ -8,6 +8,7 @@ import (
 
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/storage"
+	"github.com/snithish/mockbucket/internal/storagetest"
 )
 
 func TestSessionManagerAssumeRole(t *testing.T) {
@@ -71,7 +72,7 @@ func TestSessionManagerAssumeRoleHonorsAllowedRoles(t *testing.T) {
 			{ID: "restricted", Secret: "s", AllowedRoles: []string{"reader"}},
 		},
 	}
-	if err := store.ApplySeedState(ctx, state, &noopObjectStore{}); err != nil {
+	if err := store.ApplySeedState(ctx, state, storagetest.NoopObjectStore{}); err != nil {
 		t.Fatalf("ApplySeedState() error = %v", err)
 	}
 
@@ -104,7 +105,7 @@ func TestSessionManagerAssumeRoleOpenWhenNoAllowedRoles(t *testing.T) {
 		Roles:      []core.Role{{Name: "any-role"}},
 		AccessKeys: []storage.SeedAccessKey{{ID: "open", Secret: "s", AllowedRoles: nil}},
 	}
-	if err := store.ApplySeedState(ctx, state, &noopObjectStore{}); err != nil {
+	if err := store.ApplySeedState(ctx, state, storagetest.NoopObjectStore{}); err != nil {
 		t.Fatalf("ApplySeedState() error = %v", err)
 	}
 
@@ -113,20 +114,3 @@ func TestSessionManagerAssumeRoleOpenWhenNoAllowedRoles(t *testing.T) {
 		t.Fatalf("AssumeRole() error = %v, want nil (empty allowed_roles = open)", err)
 	}
 }
-
-type noopObjectStore struct{}
-
-func (noopObjectStore) PutObject(context.Context, string, string, storage.ObjectSource) (core.ObjectMetadata, error) {
-	return core.ObjectMetadata{}, nil
-}
-func (noopObjectStore) OpenObject(context.Context, string, string) (storage.ObjectReader, core.ObjectMetadata, error) {
-	return nil, core.ObjectMetadata{}, core.ErrNotFound
-}
-func (noopObjectStore) DeleteObject(context.Context, string, string) error { return nil }
-func (noopObjectStore) PutMultipartPart(context.Context, string, int, storage.ObjectSource) (core.MultipartPart, error) {
-	return core.MultipartPart{}, nil
-}
-func (noopObjectStore) CompleteMultipartUpload(context.Context, string, string, []core.MultipartPart) (core.ObjectMetadata, error) {
-	return core.ObjectMetadata{}, nil
-}
-func (noopObjectStore) AbortMultipartUpload(context.Context, string) error { return nil }

@@ -15,12 +15,12 @@ import (
 )
 
 func TestHandleAssumeRoleUnsupportedActionReturnsNotFound(t *testing.T) {
-	deps, _, cleanup := newSTSTestDeps(t)
-	defer cleanup()
+	fixture := newSTSTestFixture(t)
+	defer fixture.cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/?Action=GetCallerIdentity", nil)
 	rec := httptest.NewRecorder()
-	handleAssumeRole(rec, req, deps)
+	handleAssumeRole(rec, req, fixture.deps)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -28,8 +28,8 @@ func TestHandleAssumeRoleUnsupportedActionReturnsNotFound(t *testing.T) {
 }
 
 func TestHandleAssumeRoleMissingRoleReturnsNotFound(t *testing.T) {
-	deps, _, cleanup := newSTSTestDeps(t)
-	defer cleanup()
+	fixture := newSTSTestFixture(t)
+	defer fixture.cleanup()
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -37,7 +37,7 @@ func TestHandleAssumeRoleMissingRoleReturnsNotFound(t *testing.T) {
 		nil,
 	)
 	rec := httptest.NewRecorder()
-	handleAssumeRole(rec, req, deps)
+	handleAssumeRole(rec, req, fixture.deps)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -45,8 +45,8 @@ func TestHandleAssumeRoleMissingRoleReturnsNotFound(t *testing.T) {
 }
 
 func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
-	deps, metadata, cleanup := newSTSTestDeps(t)
-	defer cleanup()
+	fixture := newSTSTestFixture(t)
+	defer fixture.cleanup()
 	state := storage.SeedState{
 		Roles: []core.Role{{Name: "reader"}},
 		AccessKeys: []storage.SeedAccessKey{
@@ -57,7 +57,7 @@ func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
 			},
 		},
 	}
-	if err := metadata.ApplySeedState(context.Background(), state, nil); err != nil {
+	if err := fixture.metadata.ApplySeedState(context.Background(), state, nil); err != nil {
 		t.Fatalf("ApplySeedState() error = %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
 	)
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=restricted/20260326/us-east-1/sts/aws4_request,SignedHeaders=host;x-amz-date,Signature=deadbeef")
 	rec := httptest.NewRecorder()
-	handleAssumeRole(rec, req, deps)
+	handleAssumeRole(rec, req, fixture.deps)
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
@@ -76,9 +76,9 @@ func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
 }
 
 func TestHandleAssumeRoleInvalidArgumentWhenSessionNameMissing(t *testing.T) {
-	deps, metadata, cleanup := newSTSTestDeps(t)
-	defer cleanup()
-	if err := metadata.UpsertRole(context.Background(), core.Role{Name: "reader"}); err != nil {
+	fixture := newSTSTestFixture(t)
+	defer fixture.cleanup()
+	if err := fixture.metadata.UpsertRole(context.Background(), core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
 
@@ -88,14 +88,19 @@ func TestHandleAssumeRoleInvalidArgumentWhenSessionNameMissing(t *testing.T) {
 		nil,
 	)
 	rec := httptest.NewRecorder()
-	handleAssumeRole(rec, req, deps)
+	handleAssumeRole(rec, req, fixture.deps)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func newSTSTestDeps(t *testing.T) (common.Dependencies, *storage.SQLiteStore, func()) {
+type stsTestFixture struct {
+	deps     common.Dependencies
+	metadata *storage.SQLiteStore
+}
+
+func newSTSTestFixture(t *testing.T) stsTestFixture {
 	t.Helper()
 	metadata, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
 	if err != nil {
@@ -108,5 +113,12 @@ func newSTSTestDeps(t *testing.T) (common.Dependencies, *storage.SQLiteStore, fu
 	deps := common.Dependencies{
 		SessionManager: sessionManager,
 	}
-	return deps, metadata, func() { _ = metadata.Close() }
+	return stsTestFixture{
+		deps:     deps,
+		metadata: metadata,
+	}
+}
+
+func (fixture stsTestFixture) cleanup() {
+	_ = fixture.metadata.Close()
 }

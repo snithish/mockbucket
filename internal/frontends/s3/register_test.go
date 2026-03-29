@@ -11,16 +11,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
 	"github.com/snithish/mockbucket/internal/storage"
+	"github.com/snithish/mockbucket/internal/storagetest"
 )
 
 func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
 	fixture := newS3StoreFixture(t)
-	meta := &failingMetadataStore{bucket: "demo", putErr: errors.New("db down")}
+	meta := &storagetest.FailingMetadataStore{Bucket: "demo", PutErr: errors.New("db down")}
 	deps := common.Dependencies{Metadata: meta, Objects: fixture.objects}
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", bytes.NewBufferString("payload"))
@@ -113,7 +113,7 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 	if _, err := fixture.objects.PutObject(fixture.ctx, "demo", "file.txt", bytes.NewBufferString("payload")); err != nil {
 		t.Fatalf("PutObject() error = %v", err)
 	}
-	meta := &failingMetadataStore{bucket: "demo", deleteErr: core.ErrNotFound}
+	meta := &storagetest.FailingMetadataStore{Bucket: "demo", DeleteErr: core.ErrNotFound}
 	deps := common.Dependencies{Metadata: meta, Objects: fixture.objects}
 
 	req := httptest.NewRequest(http.MethodDelete, "/demo/file.txt", nil)
@@ -322,7 +322,7 @@ func TestWriteErrorUsesS3XMLEnvelope(t *testing.T) {
 
 func TestGetObjectMissingBucketReturnsNoSuchBucket(t *testing.T) {
 	deps := common.Dependencies{
-		Metadata: &failingMetadataStore{bucketErr: core.ErrNotFound},
+		Metadata: &storagetest.FailingMetadataStore{BucketErr: core.ErrNotFound},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/missing/file.txt", nil)
 	req.SetPathValue("bucket", "missing")
@@ -341,7 +341,7 @@ func TestGetObjectMissingBucketReturnsNoSuchBucket(t *testing.T) {
 
 func TestGetObjectMissingKeyReturnsNoSuchKey(t *testing.T) {
 	deps := common.Dependencies{
-		Metadata: &failingMetadataStore{bucket: "demo"},
+		Metadata: &storagetest.FailingMetadataStore{Bucket: "demo"},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/demo/missing.txt", nil)
 	req.SetPathValue("bucket", "demo")
@@ -359,9 +359,10 @@ func TestGetObjectMissingKeyReturnsNoSuchKey(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsMalformedPayload(t *testing.T) {
-	meta := &multipartMetadataStore{
-		bucket:   "demo",
-		uploadID: "upload-1",
+	meta := &storagetest.MultipartMetadataStore{
+		Bucket:   "demo",
+		Key:      "object.txt",
+		UploadID: "upload-1",
 	}
 	deps := common.Dependencies{Metadata: meta}
 
@@ -385,10 +386,11 @@ func TestCompleteMultipartRejectsMalformedPayload(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsOutOfOrderParts(t *testing.T) {
-	meta := &multipartMetadataStore{
-		bucket:   "demo",
-		uploadID: "upload-1",
-		parts: []core.MultipartPart{
+	meta := &storagetest.MultipartMetadataStore{
+		Bucket:   "demo",
+		Key:      "object.txt",
+		UploadID: "upload-1",
+		Parts: []core.MultipartPart{
 			{UploadID: "upload-1", PartNumber: 1, ETag: "etag-1"},
 			{UploadID: "upload-1", PartNumber: 2, ETag: "etag-2"},
 		},
@@ -415,10 +417,11 @@ func TestCompleteMultipartRejectsOutOfOrderParts(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsDuplicatePartNumbers(t *testing.T) {
-	meta := &multipartMetadataStore{
-		bucket:   "demo",
-		uploadID: "upload-1",
-		parts: []core.MultipartPart{
+	meta := &storagetest.MultipartMetadataStore{
+		Bucket:   "demo",
+		Key:      "object.txt",
+		UploadID: "upload-1",
+		Parts: []core.MultipartPart{
 			{UploadID: "upload-1", PartNumber: 1, ETag: "etag-1"},
 		},
 	}
@@ -458,12 +461,13 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutMultipartPart() error = %v", err)
 	}
-	meta := &multipartMetadataStore{
-		bucket:               "demo",
-		uploadID:             "upload-1",
-		parts:                []core.MultipartPart{part1, part2},
-		deleteMultipartErr:   errors.New("delete failed"),
-		allowMetadataDeletes: true,
+	meta := &storagetest.MultipartMetadataStore{
+		Bucket:               "demo",
+		Key:                  "object.txt",
+		UploadID:             "upload-1",
+		Parts:                []core.MultipartPart{part1, part2},
+		DeleteMultipartErr:   errors.New("delete failed"),
+		AllowMetadataDeletes: true,
 	}
 	deps := common.Dependencies{Metadata: meta, Objects: objects}
 
@@ -527,144 +531,3 @@ func newS3StoreFixture(t *testing.T) s3StoreFixture {
 func (f s3StoreFixture) deps() common.Dependencies {
 	return common.Dependencies{Metadata: f.metadata, Objects: f.objects}
 }
-
-type failingMetadataStore struct {
-	bucket    string
-	bucketErr error
-	putErr    error
-	deleteErr error
-}
-
-func (m *failingMetadataStore) Ping(context.Context) error                 { return nil }
-func (m *failingMetadataStore) EnsureBucket(context.Context, string) error { return nil }
-func (m *failingMetadataStore) CreateBucket(context.Context, string) error { return nil }
-func (m *failingMetadataStore) DeleteBucket(context.Context, string) error { return nil }
-func (m *failingMetadataStore) GetBucket(context.Context, string) (core.Bucket, error) {
-	if m.bucketErr != nil {
-		return core.Bucket{}, m.bucketErr
-	}
-	return core.Bucket{Name: m.bucket}, nil
-}
-func (m *failingMetadataStore) ListBuckets(context.Context) ([]core.Bucket, error) { return nil, nil }
-func (m *failingMetadataStore) PutObject(context.Context, core.ObjectMetadata) error {
-	return m.putErr
-}
-func (m *failingMetadataStore) GetObject(context.Context, string, string) (core.ObjectMetadata, error) {
-	return core.ObjectMetadata{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) DeleteObject(context.Context, string, string) error {
-	return m.deleteErr
-}
-func (m *failingMetadataStore) ListObjects(context.Context, string, string, int, string) ([]core.ObjectMetadata, error) {
-	return nil, nil
-}
-func (m *failingMetadataStore) UpsertRole(context.Context, core.Role) error { return nil }
-func (m *failingMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
-	return core.AccessKey{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) GetRole(context.Context, string) (core.Role, error) {
-	return core.Role{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) CreateSession(context.Context, core.Session) error { return nil }
-func (m *failingMetadataStore) GetSession(context.Context, string) (core.Session, error) {
-	return core.Session{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) DeleteExpiredSessions(context.Context, time.Time) error { return nil }
-func (m *failingMetadataStore) CreateMultipartUpload(context.Context, core.MultipartUpload) error {
-	return nil
-}
-func (m *failingMetadataStore) GetMultipartUpload(context.Context, string) (core.MultipartUpload, error) {
-	return core.MultipartUpload{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) PutMultipartPart(context.Context, core.MultipartPart) error {
-	return nil
-}
-func (m *failingMetadataStore) ListMultipartParts(context.Context, string) ([]core.MultipartPart, error) {
-	return nil, nil
-}
-func (m *failingMetadataStore) DeleteMultipartUpload(context.Context, string) error { return nil }
-func (m *failingMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
-	return nil
-}
-func (m *failingMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, error) {
-	return core.ServiceAccount{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
-	return core.ServiceAccount{}, core.ErrNotFound
-}
-func (m *failingMetadataStore) ListServiceAccounts(context.Context) ([]core.ServiceAccount, error) {
-	return nil, nil
-}
-func (m *failingMetadataStore) DeleteServiceAccounts(context.Context) error { return nil }
-func (m *failingMetadataStore) Close() error                                { return nil }
-
-type multipartMetadataStore struct {
-	bucket               string
-	uploadID             string
-	parts                []core.MultipartPart
-	deleteMultipartErr   error
-	allowMetadataDeletes bool
-}
-
-func (m *multipartMetadataStore) Ping(context.Context) error                 { return nil }
-func (m *multipartMetadataStore) EnsureBucket(context.Context, string) error { return nil }
-func (m *multipartMetadataStore) CreateBucket(context.Context, string) error { return nil }
-func (m *multipartMetadataStore) DeleteBucket(context.Context, string) error { return nil }
-func (m *multipartMetadataStore) GetBucket(context.Context, string) (core.Bucket, error) {
-	return core.Bucket{Name: m.bucket}, nil
-}
-func (m *multipartMetadataStore) ListBuckets(context.Context) ([]core.Bucket, error)   { return nil, nil }
-func (m *multipartMetadataStore) PutObject(context.Context, core.ObjectMetadata) error { return nil }
-func (m *multipartMetadataStore) GetObject(context.Context, string, string) (core.ObjectMetadata, error) {
-	return core.ObjectMetadata{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) DeleteObject(context.Context, string, string) error {
-	if m.allowMetadataDeletes {
-		return nil
-	}
-	return errors.New("delete object failed")
-}
-func (m *multipartMetadataStore) ListObjects(context.Context, string, string, int, string) ([]core.ObjectMetadata, error) {
-	return nil, nil
-}
-func (m *multipartMetadataStore) UpsertRole(context.Context, core.Role) error { return nil }
-func (m *multipartMetadataStore) FindAccessKey(context.Context, string) (core.AccessKey, error) {
-	return core.AccessKey{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) GetRole(context.Context, string) (core.Role, error) {
-	return core.Role{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) CreateSession(context.Context, core.Session) error { return nil }
-func (m *multipartMetadataStore) GetSession(context.Context, string) (core.Session, error) {
-	return core.Session{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) DeleteExpiredSessions(context.Context, time.Time) error { return nil }
-func (m *multipartMetadataStore) CreateMultipartUpload(context.Context, core.MultipartUpload) error {
-	return nil
-}
-func (m *multipartMetadataStore) GetMultipartUpload(context.Context, string) (core.MultipartUpload, error) {
-	return core.MultipartUpload{UploadID: m.uploadID, Bucket: m.bucket, Key: "object.txt"}, nil
-}
-func (m *multipartMetadataStore) PutMultipartPart(context.Context, core.MultipartPart) error {
-	return nil
-}
-func (m *multipartMetadataStore) ListMultipartParts(context.Context, string) ([]core.MultipartPart, error) {
-	return m.parts, nil
-}
-func (m *multipartMetadataStore) DeleteMultipartUpload(context.Context, string) error {
-	return m.deleteMultipartErr
-}
-func (m *multipartMetadataStore) UpsertServiceAccount(context.Context, core.ServiceAccount) error {
-	return nil
-}
-func (m *multipartMetadataStore) FindServiceAccountByToken(context.Context, string) (core.ServiceAccount, error) {
-	return core.ServiceAccount{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) FindServiceAccountByEmail(context.Context, string) (core.ServiceAccount, error) {
-	return core.ServiceAccount{}, core.ErrNotFound
-}
-func (m *multipartMetadataStore) ListServiceAccounts(context.Context) ([]core.ServiceAccount, error) {
-	return nil, nil
-}
-func (m *multipartMetadataStore) DeleteServiceAccounts(context.Context) error { return nil }
-func (m *multipartMetadataStore) Close() error                                { return nil }
