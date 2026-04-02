@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
@@ -75,6 +77,129 @@ func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
 		Key:    aws.String("missing-object.txt"),
 	})
 	assertAWSAPIErrorCode(t, err, "NoSuchKey")
+}
+
+func TestS3VirtualHostedStyleAccess(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	runtime.Config.Server.Address = "localhost:9000"
+	virtualHostedClient := newLocalhostS3Client(t, runtime, "admin", "admin-secret", "", false)
+	ctx := context.Background()
+
+	if _, err := virtualHostedClient.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("host-style.txt"),
+		Body:   bytes.NewReader([]byte("host-style")),
+	}); err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+
+	headOut, err := virtualHostedClient.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("host-style.txt"),
+	})
+	if err != nil {
+		t.Fatalf("HeadObject() error = %v", err)
+	}
+	if got, want := aws.ToInt64(headOut.ContentLength), int64(len("host-style")); got != want {
+		t.Fatalf("HeadObject() content length = %d, want %d", got, want)
+	}
+
+	getOut, err := virtualHostedClient.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("host-style.txt"),
+	})
+	if err != nil {
+		t.Fatalf("GetObject() error = %v", err)
+	}
+	defer getOut.Body.Close()
+	body, err := io.ReadAll(getOut.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got, want := string(body), "host-style"; got != want {
+		t.Fatalf("GetObject() body = %q, want %q", got, want)
+	}
+}
+
+func TestS3PresignedGetPutAndHead(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	presignClient := newS3PresignClient(t, runtime, "admin", "admin-secret", "", true)
+	ctx := context.Background()
+
+	putURL, err := presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("presigned.txt"),
+	}, s3.WithPresignExpires(5*time.Minute))
+	if err != nil {
+		t.Fatalf("PresignPutObject() error = %v", err)
+	}
+	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL.URL, strings.NewReader("presigned-body"))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(PUT) error = %v", err)
+	}
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT presigned request error = %v", err)
+	}
+	defer putResp.Body.Close()
+	if got, want := putResp.StatusCode, http.StatusOK; got != want {
+		body, _ := io.ReadAll(putResp.Body)
+		t.Fatalf("PUT presigned status = %d, want %d, body = %q", got, want, string(body))
+	}
+
+	headURL, err := presignClient.PresignHeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("presigned.txt"),
+	}, s3.WithPresignExpires(5*time.Minute))
+	if err != nil {
+		t.Fatalf("PresignHeadObject() error = %v", err)
+	}
+	headResp, err := http.DefaultClient.Do(mustHTTPRequest(t, ctx, http.MethodHead, headURL.URL, nil))
+	if err != nil {
+		t.Fatalf("HEAD presigned request error = %v", err)
+	}
+	defer headResp.Body.Close()
+	if got, want := headResp.StatusCode, http.StatusOK; got != want {
+		t.Fatalf("HEAD presigned status = %d, want %d", got, want)
+	}
+	if got, want := headResp.Header.Get("Content-Length"), strconv.Itoa(len("presigned-body")); got != want {
+		t.Fatalf("HEAD presigned content length = %q, want %q", got, want)
+	}
+
+	getURL, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("presigned.txt"),
+	}, s3.WithPresignExpires(5*time.Minute))
+	if err != nil {
+		t.Fatalf("PresignGetObject() error = %v", err)
+	}
+	getResp, err := http.DefaultClient.Do(mustHTTPRequest(t, ctx, http.MethodGet, getURL.URL, nil))
+	if err != nil {
+		t.Fatalf("GET presigned request error = %v", err)
+	}
+	defer getResp.Body.Close()
+	if got, want := getResp.StatusCode, http.StatusOK; got != want {
+		t.Fatalf("GET presigned status = %d, want %d", got, want)
+	}
+	body, err := io.ReadAll(getResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got, want := string(body), "presigned-body"; got != want {
+		t.Fatalf("GET presigned body = %q, want %q", got, want)
+	}
+}
+
+func TestAWSPhaseScaffolding(t *testing.T) {
+	t.Run("STSIdentityAPIs", func(t *testing.T) {
+		t.Skip("Phase 2: GetCallerIdentity and GetSessionToken coverage")
+	})
+	t.Run("MetadataRoundTrip", func(t *testing.T) {
+		t.Skip("Phase 3: persisted object metadata coverage")
+	})
+	t.Run("ConditionalHeaders", func(t *testing.T) {
+		t.Skip("Phase 4: conditional request coverage")
+	})
 }
 
 func TestS3AWSChunkedPutObject(t *testing.T) {
@@ -284,13 +409,37 @@ func newAWSTestRuntime(t *testing.T) *Runtime {
 
 func newS3Client(t *testing.T, runtime *Runtime, accessKeyID, secretKey, sessionToken string) *s3.Client {
 	t.Helper()
+	return newS3ClientWithAddressing(t, runtime, accessKeyID, secretKey, sessionToken, true)
+}
+
+func newS3ClientWithAddressing(t *testing.T, runtime *Runtime, accessKeyID, secretKey, sessionToken string, usePathStyle bool) *s3.Client {
+	t.Helper()
 	endpoint := httptest.NewServer(runtime.HTTPServer.Handler)
 	t.Cleanup(endpoint.Close)
+	return newS3ClientWithBaseEndpoint(t, accessKeyID, secretKey, sessionToken, endpoint.URL, usePathStyle)
+}
+
+func newLocalhostS3Client(t *testing.T, runtime *Runtime, accessKeyID, secretKey, sessionToken string, usePathStyle bool) *s3.Client {
+	t.Helper()
+	endpoint := httptest.NewServer(runtime.HTTPServer.Handler)
+	t.Cleanup(endpoint.Close)
+	endpointURL := mustParseURL(t, endpoint.URL)
+	endpointURL.Host = "localhost:" + endpointURL.Port()
+	return newS3ClientWithBaseEndpoint(t, accessKeyID, secretKey, sessionToken, endpointURL.String(), usePathStyle)
+}
+
+func newS3ClientWithBaseEndpoint(t *testing.T, accessKeyID, secretKey, sessionToken, baseEndpoint string, usePathStyle bool) *s3.Client {
+	t.Helper()
 	cfg := newAWSConfig(t, accessKeyID, secretKey, sessionToken)
 	return s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint.URL)
-		o.UsePathStyle = true
+		o.BaseEndpoint = aws.String(baseEndpoint)
+		o.UsePathStyle = usePathStyle
 	})
+}
+
+func newS3PresignClient(t *testing.T, runtime *Runtime, accessKeyID, secretKey, sessionToken string, usePathStyle bool) *s3.PresignClient {
+	t.Helper()
+	return s3.NewPresignClient(newS3ClientWithAddressing(t, runtime, accessKeyID, secretKey, sessionToken, usePathStyle))
 }
 
 func newSTSClient(t *testing.T, runtime *Runtime, accessKeyID, secretKey, sessionToken string) *sts.Client {
@@ -328,6 +477,24 @@ func assertAWSAPIErrorCode(t *testing.T, err error, wantCode string) {
 	if got := apiErr.ErrorCode(); got != wantCode {
 		t.Fatalf("error code = %q, want %q", got, wantCode)
 	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", raw, err)
+	}
+	return parsed
+}
+
+func mustHTTPRequest(t *testing.T, ctx context.Context, method, rawURL string, body io.Reader) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(%s, %q) error = %v", method, rawURL, err)
+	}
+	return req
 }
 
 const awsSTSTestSeedYAML = `buckets:

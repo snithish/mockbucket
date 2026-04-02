@@ -54,6 +54,10 @@ class GCSCompatSuite(CompatSuite):
             client_options={"api_endpoint": ENDPOINT},
         )
 
+    def _make_blob(self, bucket: str, key: str):
+        client = self._make_client()
+        return client, client.bucket(bucket).blob(key)
+
     def run(self, with_pyspark: bool = False) -> int:
         errors = 0
         errors += self._test_buckets()
@@ -81,10 +85,8 @@ class GCSCompatSuite(CompatSuite):
         return 0
 
     def _test_objects(self) -> int:
-        client = self._make_client()
+        client, blob = self._make_blob("compat-demo", "compat/gcs-sdk-test.txt")
         bucket = client.bucket("compat-demo")
-
-        blob = bucket.blob("compat/gcs-sdk-test.txt")
         blob.upload_from_string(b"gcs-sdk-compat-content")
 
         blob = bucket.get_blob("compat/gcs-sdk-test.txt")

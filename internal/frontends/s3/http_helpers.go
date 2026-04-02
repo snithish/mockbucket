@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,6 +64,24 @@ type completeMultipartUploadResult struct {
 	Bucket   string   `xml:"Bucket"`
 	Key      string   `xml:"Key"`
 	ETag     string   `xml:"ETag"`
+}
+
+func AddressingStyleMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucket, ok := bucketFromVirtualHost(r.Host)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clonedURL := *r.URL
+		clone.URL = &clonedURL
+		clone.URL.Path = rewriteVirtualHostedPath(clone.URL.Path, bucket)
+		if clone.URL.RawPath != "" {
+			clone.URL.RawPath = rewriteVirtualHostedPath(clone.URL.RawPath, bucket)
+		}
+		next.ServeHTTP(w, clone)
+	})
 }
 
 func openObjectForRead(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) (core.ObjectMetadata, io.ReadCloser, bool) {
@@ -182,6 +201,39 @@ func newCompleteMultipartUploadResult(bucket, key string, meta core.ObjectMetada
 		Key:      key,
 		ETag:     `"` + meta.ETag + `"`,
 	}
+}
+
+func bucketFromVirtualHost(hostport string) (string, bool) {
+	host := hostport
+	if strings.Contains(hostport, ":") {
+		parsedHost, _, err := net.SplitHostPort(hostport)
+		if err == nil {
+			host = parsedHost
+		}
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return "", false
+	}
+	bucket := strings.TrimSuffix(host, ".localhost")
+	if bucket == "" || strings.Contains(bucket, ".") {
+		return "", false
+	}
+	return bucket, true
+}
+
+func rewriteVirtualHostedPath(path, bucket string) string {
+	if path == "" || path == "/" {
+		return "/" + bucket
+	}
+	trimmed := strings.TrimPrefix(path, "/")
+	if trimmed == bucket || strings.HasPrefix(trimmed, bucket+"/") {
+		return path
+	}
+	return "/" + bucket + "/" + trimmed
 }
 
 func hasLocationQuery(r *http.Request) bool {

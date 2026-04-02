@@ -43,9 +43,9 @@ MockBucket is designed for:
 
 It currently simulates:
 
-- S3 object-storage workflows
+- S3 object-storage workflows, including copy, multipart upload, virtual-hosted-style addressing, and common presigned URL access
 - STS `AssumeRole` flows alongside S3
-- GCS object-storage workflows
+- GCS object-storage workflows, including media, multipart, resumable upload, and rewrite
 
 Azure is not implemented in this repository yet. If you need Azure support,
 that is future work rather than a current feature.
@@ -301,8 +301,8 @@ you need, and contributions to add Azure support are welcome.
 
 ### Additional caveats
 
-- **No SigV4 verification.** S3 and STS requests are accepted even when the
-  signature does not validate.
+- **No SigV4 verification.** S3 and STS requests are accepted even when header-
+  or query-based signatures do not validate.
 - **No trust-policy checks on STS `AssumeRole`.** Role existence plus
   `allowed_roles` enforcement is the current model.
 - **No full IAM policy engine.** Action/resource authorization is intentionally
@@ -380,8 +380,7 @@ The GCS frontend intentionally excludes several cloud features. MockBucket does
 not currently implement:
 
 - IAM policy APIs and policy binding evaluation
-- Resumable uploads (`uploadType=resumable`)
-- Object generations and metagenerations
+- Durable generation and metageneration counters
 - Preconditions (`ifGenerationMatch`, `ifMetagenerationMatch`, and variants)
 - Rich object metadata parity (beyond the small metadata subset returned today)
 

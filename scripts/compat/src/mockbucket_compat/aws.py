@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -30,6 +31,7 @@ class AWSCompatSuite(CompatSuite):
         errors = 0
         errors += self._test_awscli()
         errors += self._test_boto3()
+        errors += self._test_presigned_urls()
         errors += self._test_multipart()
         errors += self._test_sts_assume_role()
         errors += self._test_sts_allowed_roles()
@@ -37,6 +39,31 @@ class AWSCompatSuite(CompatSuite):
         if with_pyspark:
             errors += self._test_pyspark()
         return errors
+
+    def _make_s3_client(self, *, path_style: bool = True):
+        import boto3
+        from botocore.config import Config
+
+        endpoint = ENDPOINT if path_style else ENDPOINT.replace("127.0.0.1", "localhost")
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            region_name=os.environ["AWS_REGION"],
+            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+            config=Config(s3={"addressing_style": "path" if path_style else "virtual"}),
+        )
+
+    def _make_sts_client(self, access_key: str | None = None, secret_key: str | None = None):
+        import boto3
+
+        return boto3.client(
+            "sts",
+            endpoint_url=ENDPOINT,
+            region_name=os.environ["AWS_REGION"],
+            aws_access_key_id=access_key or os.environ["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=secret_key or os.environ["AWS_SECRET_ACCESS_KEY"],
+        )
 
     def _test_awscli(self) -> int:
         aws = shutil.which("aws")
@@ -78,15 +105,7 @@ class AWSCompatSuite(CompatSuite):
         return 0
 
     def _test_boto3(self) -> int:
-        import boto3
-
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=ENDPOINT,
-            region_name=os.environ["AWS_REGION"],
-            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        )
+        s3 = self._make_s3_client()
 
         buckets = [bucket["Name"] for bucket in s3.list_buckets().get("Buckets", [])]
         if "demo" not in buckets:
@@ -115,16 +134,54 @@ class AWSCompatSuite(CompatSuite):
         ok("boto3")
         return 0
 
-    def _test_multipart(self) -> int:
-        import boto3
+    def _test_boto3_virtual_hosted(self) -> int:
+        skip("boto3 virtual-hosted - covered by server tests; custom endpoint SDK behavior is environment-sensitive")
+        return 0
 
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=ENDPOINT,
-            region_name=os.environ["AWS_REGION"],
-            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    def _test_presigned_urls(self) -> int:
+        s3 = self._make_s3_client()
+
+        put_url = s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": "demo", "Key": "compat/presigned.txt"},
+            ExpiresIn=300,
+            HttpMethod="PUT",
         )
+        put_req = urllib.request.Request(put_url, data=b"presigned-compat", method="PUT")
+        with urllib.request.urlopen(put_req) as resp:
+            if resp.status != 200:
+                fail(f"presigned PUT - status={resp.status}, want 200")
+                return 1
+
+        head_url = s3.generate_presigned_url(
+            "head_object",
+            Params={"Bucket": "demo", "Key": "compat/presigned.txt"},
+            ExpiresIn=300,
+            HttpMethod="HEAD",
+        )
+        head_req = urllib.request.Request(head_url, method="HEAD")
+        with urllib.request.urlopen(head_req) as resp:
+            if resp.status != 200:
+                fail(f"presigned HEAD - status={resp.status}, want 200")
+                return 1
+
+        get_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": "demo", "Key": "compat/presigned.txt"},
+            ExpiresIn=300,
+            HttpMethod="GET",
+        )
+        with urllib.request.urlopen(get_url) as resp:
+            body = resp.read()
+        if body != b"presigned-compat":
+            fail(f"presigned GET - content={body!r}, want b'presigned-compat'")
+            return 1
+
+        ok("presigned urls")
+        return 0
+
+    def _test_multipart(self) -> int:
+        s3 = self._make_s3_client()
 
         create = s3.create_multipart_upload(Bucket="demo", Key="compat/multipart.txt")
         upload_id = create["UploadId"]
@@ -163,15 +220,7 @@ class AWSCompatSuite(CompatSuite):
         return 0
 
     def _test_sts_assume_role(self) -> int:
-        import boto3
-
-        sts = boto3.client(
-            "sts",
-            endpoint_url=ENDPOINT,
-            region_name=os.environ["AWS_REGION"],
-            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        )
+        sts = self._make_sts_client()
 
         resp = sts.assume_role(
             RoleArn="arn:mockbucket:iam::role/data-reader",
@@ -195,6 +244,8 @@ class AWSCompatSuite(CompatSuite):
         if not assumed_user.get("Arn"):
             fail("sts assume_role - missing AssumedRoleUser.Arn")
             return 1
+
+        import boto3
 
         s3 = boto3.client(
             "s3",
@@ -220,15 +271,7 @@ class AWSCompatSuite(CompatSuite):
         return 0
 
     def _test_sts_allowed_roles(self) -> int:
-        import boto3
-
-        sts = boto3.client(
-            "sts",
-            endpoint_url=ENDPOINT,
-            region_name=os.environ["AWS_REGION"],
-            aws_access_key_id="restricted",
-            aws_secret_access_key="restricted-secret",
-        )
+        sts = self._make_sts_client(access_key="restricted", secret_key="restricted-secret")
 
         resp = sts.assume_role(
             RoleArn="arn:mockbucket:iam::role/data-reader",

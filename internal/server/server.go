@@ -17,6 +17,7 @@ import (
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends"
 	"github.com/snithish/mockbucket/internal/frontends/common"
+	s3frontend "github.com/snithish/mockbucket/internal/frontends/s3"
 	"github.com/snithish/mockbucket/internal/httpx"
 	"github.com/snithish/mockbucket/internal/iam"
 	"github.com/snithish/mockbucket/internal/seed"
@@ -85,7 +86,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Runtime,
 	mux := http.NewServeMux()
 	registerHealth(mux, cfg, metadata)
 	frontends.Register(mux, cfg, deps, gcsServiceAccounts)
-	handler, err := httpx.RequestCapture(logger, cfg.Server.RequestCapture.Enabled, cfg.Server.RequestCapture.Path, mux)
+	var app http.Handler = mux
+	if cfg.Frontends.Type == config.FrontendS3 {
+		app = s3frontend.AddressingStyleMiddleware(app)
+	}
+	handler, err := httpx.RequestCapture(logger, cfg.Server.RequestCapture.Enabled, cfg.Server.RequestCapture.Path, app)
 	if err != nil {
 		return nil, err
 	}

@@ -296,6 +296,21 @@ func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
 	}
 }
 
+func TestGCSPhaseScaffolding(t *testing.T) {
+	t.Run("MetadataRoundTrip", func(t *testing.T) {
+		t.Skip("Phase 3: persisted metadata coverage")
+	})
+	t.Run("GenerationPreconditions", func(t *testing.T) {
+		t.Skip("Phase 4: generation and metageneration precondition coverage")
+	})
+	t.Run("Compose", func(t *testing.T) {
+		t.Skip("Phase 5: compose coverage")
+	})
+	t.Run("SignedURLs", func(t *testing.T) {
+		t.Skip("Phase 5: signed URL coverage")
+	})
+}
+
 func TestGCSServiceAccountEndpointUsesSeededPrincipal(t *testing.T) {
 	_, server := newGCSTestServer(t, func(cfg *mbconfig.Config) {
 		cfg.Frontends.Type = config.FrontendGCS
@@ -626,4 +641,16 @@ func newGCSClient(t *testing.T, endpoint, token string) *storage.Client {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 	return client
+}
+
+func newGCSAuthedRequest(t *testing.T, ctx context.Context, method, endpoint, path, token string, body io.Reader) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(endpoint, "/")+path, body)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req
 }

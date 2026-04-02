@@ -9,12 +9,34 @@ import (
 type contractObjectAttrs struct {
 	ContentLength int64
 	ETag          string
+	ContentType   string
+	Metadata      map[string]string
 }
 
 type contractListResult struct {
 	Keys      []string
 	NextToken string
 	Truncated bool
+}
+
+// These phase-0 scaffolding types keep future compatibility tests speaking the
+// same vocabulary before the underlying provider behavior lands.
+type contractMetadata struct {
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	ContentEncoding    string
+	ContentLanguage    string
+	Custom             map[string]string
+}
+
+type contractConditions struct {
+	IfMatch               string
+	IfNoneMatch           string
+	IfModifiedSince       string
+	IfUnmodifiedSince     string
+	IfGenerationMatch     int64
+	IfMetagenerationMatch int64
 }
 
 type frontendContractClient interface {
