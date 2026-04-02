@@ -34,6 +34,8 @@ class AWSCompatSuite(CompatSuite):
         errors += self._test_presigned_urls()
         errors += self._test_multipart()
         errors += self._test_sts_assume_role()
+        errors += self._test_sts_get_caller_identity()
+        errors += self._test_sts_get_session_token()
         errors += self._test_sts_allowed_roles()
         errors += self._test_duckdb()
         if with_pyspark:
@@ -282,6 +284,46 @@ class AWSCompatSuite(CompatSuite):
             return 1
 
         ok("sts allowed_roles")
+        return 0
+
+    def _test_sts_get_caller_identity(self) -> int:
+        sts = self._make_sts_client()
+
+        resp = sts.get_caller_identity()
+        if resp.get("Arn") != "arn:mockbucket:iam:::user/admin":
+            fail(f"sts get_caller_identity - arn={resp.get('Arn')!r}, want 'arn:mockbucket:iam:::user/admin'")
+            return 1
+        if resp.get("UserId") != "admin":
+            fail(f"sts get_caller_identity - user_id={resp.get('UserId')!r}, want 'admin'")
+            return 1
+
+        ok("sts get_caller_identity")
+        return 0
+
+    def _test_sts_get_session_token(self) -> int:
+        import boto3
+
+        sts = self._make_sts_client()
+        resp = sts.get_session_token(DurationSeconds=1800)
+        creds = resp.get("Credentials")
+        if not creds:
+            fail("sts get_session_token - missing Credentials in response")
+            return 1
+
+        session_sts = boto3.client(
+            "sts",
+            endpoint_url=ENDPOINT,
+            region_name=os.environ["AWS_REGION"],
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        )
+        identity = session_sts.get_caller_identity()
+        if identity.get("Arn") != "arn:mockbucket:iam:::user/admin":
+            fail(f"sts get_session_token - caller identity arn={identity.get('Arn')!r}, want 'arn:mockbucket:iam:::user/admin'")
+            return 1
+
+        ok("sts get_session_token")
         return 0
 
     def _test_duckdb(self) -> int:

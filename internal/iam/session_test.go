@@ -114,3 +114,72 @@ func TestSessionManagerAssumeRoleOpenWhenNoAllowedRoles(t *testing.T) {
 		t.Fatalf("AssumeRole() error = %v, want nil (empty allowed_roles = open)", err)
 	}
 }
+
+func TestSessionManagerAssumeRoleHonorsRequestedDuration(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+
+	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
+	session, err := manager.AssumeRoleWithDuration(ctx, "reader", "cli", "", 2*time.Hour)
+	if err != nil {
+		t.Fatalf("AssumeRoleWithDuration() error = %v", err)
+	}
+	if got, want := session.ExpiresAt.Sub(session.CreatedAt), 2*time.Hour; got != want {
+		t.Fatalf("duration = %v, want %v", got, want)
+	}
+}
+
+func TestSessionManagerAssumeRoleClampsDuration(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.UpsertRole(ctx, core.Role{Name: "reader"}); err != nil {
+		t.Fatalf("UpsertRole() error = %v", err)
+	}
+
+	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
+	session, err := manager.AssumeRoleWithDuration(ctx, "reader", "cli", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("AssumeRoleWithDuration() error = %v", err)
+	}
+	if got, want := session.ExpiresAt.Sub(session.CreatedAt), 12*time.Hour; got != want {
+		t.Fatalf("duration = %v, want %v", got, want)
+	}
+}
+
+func TestSessionManagerIssueSessionToken(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer store.Close()
+	state := storage.SeedState{
+		AccessKeys: []storage.SeedAccessKey{{ID: "admin", Secret: "admin-secret"}},
+	}
+	if err := store.ApplySeedState(ctx, state, storagetest.NoopObjectStore{}); err != nil {
+		t.Fatalf("ApplySeedState() error = %v", err)
+	}
+
+	manager := SessionManager{Store: store, DefaultDuration: time.Hour}
+	session, err := manager.IssueSessionToken(ctx, "admin", 30*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueSessionToken() error = %v", err)
+	}
+	if got, want := session.PrincipalName, "admin"; got != want {
+		t.Fatalf("principal = %q, want %q", got, want)
+	}
+	if got, want := session.ExpiresAt.Sub(session.CreatedAt), 30*time.Minute; got != want {
+		t.Fatalf("duration = %v, want %v", got, want)
+	}
+}

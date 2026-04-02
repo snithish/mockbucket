@@ -59,6 +59,81 @@ func TestSTSAssumeRoleAndSessionCanHeadBucket(t *testing.T) {
 	}
 }
 
+func TestSTSGetCallerIdentityForLongLivedAndSessionCredentials(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer runtime.Close()
+	ctx := context.Background()
+
+	stsClient := newSTSClient(t, runtime, "admin", "admin-secret", "")
+	identityOut, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("GetCallerIdentity(long-lived) error = %v", err)
+	}
+	if got, want := aws.ToString(identityOut.Arn), "arn:mockbucket:iam:::user/admin"; got != want {
+		t.Fatalf("GetCallerIdentity(long-lived) arn = %q, want %q", got, want)
+	}
+	if got, want := aws.ToString(identityOut.UserId), "admin"; got != want {
+		t.Fatalf("GetCallerIdentity(long-lived) user id = %q, want %q", got, want)
+	}
+
+	assumeOut, err := stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
+		RoleArn:         aws.String("arn:mockbucket:iam:::role/data-reader"),
+		RoleSessionName: aws.String("identity-check"),
+	})
+	if err != nil {
+		t.Fatalf("AssumeRole() error = %v", err)
+	}
+	sessionSTS := newSTSClient(
+		t,
+		runtime,
+		aws.ToString(assumeOut.Credentials.AccessKeyId),
+		aws.ToString(assumeOut.Credentials.SecretAccessKey),
+		aws.ToString(assumeOut.Credentials.SessionToken),
+	)
+	sessionIdentityOut, err := sessionSTS.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("GetCallerIdentity(session) error = %v", err)
+	}
+	if got, want := aws.ToString(sessionIdentityOut.Arn), "arn:mockbucket:sts:::assumed-role/data-reader/identity-check"; got != want {
+		t.Fatalf("GetCallerIdentity(session) arn = %q, want %q", got, want)
+	}
+}
+
+func TestSTSGetSessionTokenReturnsUsableTemporaryCredentials(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer runtime.Close()
+	ctx := context.Background()
+
+	stsClient := newSTSClient(t, runtime, "admin", "admin-secret", "")
+	sessionOut, err := stsClient.GetSessionToken(ctx, &sts.GetSessionTokenInput{
+		DurationSeconds: aws.Int32(1800),
+	})
+	if err != nil {
+		t.Fatalf("GetSessionToken() error = %v", err)
+	}
+	if sessionOut.Credentials == nil || aws.ToString(sessionOut.Credentials.AccessKeyId) == "" || aws.ToString(sessionOut.Credentials.SessionToken) == "" {
+		t.Fatalf("GetSessionToken() missing credentials: %+v", sessionOut.Credentials)
+	}
+	if got := sessionOut.Credentials.Expiration.Sub(time.Now().UTC()); got < 25*time.Minute || got > 35*time.Minute {
+		t.Fatalf("GetSessionToken() expiration delta = %v, want about 30m", got)
+	}
+
+	sessionSTS := newSTSClient(
+		t,
+		runtime,
+		aws.ToString(sessionOut.Credentials.AccessKeyId),
+		aws.ToString(sessionOut.Credentials.SecretAccessKey),
+		aws.ToString(sessionOut.Credentials.SessionToken),
+	)
+	identityOut, err := sessionSTS.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("GetCallerIdentity(session token) error = %v", err)
+	}
+	if got, want := aws.ToString(identityOut.Arn), "arn:mockbucket:iam:::user/admin"; got != want {
+		t.Fatalf("GetCallerIdentity(session token) arn = %q, want %q", got, want)
+	}
+}
+
 func TestS3GetObjectNotFoundErrorsAreBucketAndKeySpecific(t *testing.T) {
 	runtime := newAWSTestRuntime(t)
 	defer runtime.Close()
@@ -191,9 +266,6 @@ func TestS3PresignedGetPutAndHead(t *testing.T) {
 }
 
 func TestAWSPhaseScaffolding(t *testing.T) {
-	t.Run("STSIdentityAPIs", func(t *testing.T) {
-		t.Skip("Phase 2: GetCallerIdentity and GetSessionToken coverage")
-	})
 	t.Run("MetadataRoundTrip", func(t *testing.T) {
 		t.Skip("Phase 3: persisted object metadata coverage")
 	})

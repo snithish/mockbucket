@@ -44,7 +44,7 @@ MockBucket is designed for:
 It currently simulates:
 
 - S3 object-storage workflows, including copy, multipart upload, virtual-hosted-style addressing, and common presigned URL access
-- STS `AssumeRole` flows alongside S3
+- STS `AssumeRole`, `GetCallerIdentity`, and `GetSessionToken` flows alongside S3
 - GCS object-storage workflows, including media, multipart, resumable upload, and rewrite
 
 Azure is not implemented in this repository yet. If you need Azure support,
@@ -76,7 +76,7 @@ that is future work rather than a current feature.
   - [AWS CLI](#aws-cli)
   - [Python (boto3)](#python-boto3)
   - [Python (google-cloud-storage)](#python-google-cloud-storage)
-  - [STS AssumeRole](#sts-assumerole)
+  - [STS](#sts)
 - [Verifying Releases](#verifying-releases)
 - [Architecture](#architecture)
 - [Testing](#testing)
@@ -296,7 +296,7 @@ you need, and contributions to add Azure support are welcome.
 | Frontend | Authentication model | Identity behavior | Authorization model |
 |----------|----------------------|-------------------|---------------------|
 | `s3` | Not required | None for object APIs | Open object/bucket operations |
-| `sts` (with `s3`) | SigV4 header parsed, signature not verified | `AssumeRole` requires seeded role; `allowed_roles` is enforced for known access keys | No trust-policy or action/resource authorization |
+| `sts` (with `s3`) | SigV4 header parsed, signature not verified | `AssumeRole`, `GetCallerIdentity`, and `GetSessionToken`; `allowed_roles` is enforced for known access keys on role assumption | No trust-policy or action/resource authorization |
 | `gcs` | Required bearer/access token subject | Subject resolved from seeded GCS tokens, seeded service-account tokens, or `/oauth2/v4/token` session issuance | Authenticated subjects are allowed; no bucket/object IAM checks |
 
 ### Additional caveats
@@ -497,9 +497,9 @@ blob.upload_from_string(b"hello from gcs")
 print(blob.download_as_bytes().decode())
 ```
 
-### STS AssumeRole
+### STS
 
-STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data. Use `allowed_roles` on access keys to restrict which roles each key can assume:
+STS is automatically available when S3 is enabled. `AssumeRole` succeeds for any role defined in seed data. `GetCallerIdentity` resolves seeded access keys and temporary credentials, and `GetSessionToken` issues bounded temporary credentials from seeded access keys. Use `allowed_roles` on access keys to restrict which roles each key can assume:
 
 ```sh
 export AWS_ACCESS_KEY_ID=admin
@@ -521,6 +521,13 @@ aws --endpoint-url http://localhost:9000 s3api get-object \
 ```
 
 If an access key has `allowed_roles: ["data-reader"]`, attempting to assume any other role returns `AccessDenied`.
+
+You can also probe identity directly:
+
+```sh
+aws --endpoint-url http://localhost:9000 sts get-caller-identity
+aws --endpoint-url http://localhost:9000 sts get-session-token --duration-seconds 1800
+```
 
 ## Verifying Releases
 
@@ -567,7 +574,7 @@ internal/
   seed/                   -- seed validation, bootstrapping
   frontends/              -- protocol adapters
     s3/                   -- S3 wire protocol (ListBuckets, PutObject, etc.)
-    sts/                  -- STS wire protocol (AssumeRole)
+    sts/                  -- STS wire protocol (AssumeRole, GetCallerIdentity, GetSessionToken)
     gcs/                  -- GCS wire protocol
   httpx/                  -- shared middleware, error mapping, request context
   core/                   -- sentinel errors, domain models
