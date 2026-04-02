@@ -45,7 +45,7 @@ It currently simulates:
 
 - S3 object-storage workflows, including copy, multipart upload, virtual-hosted-style addressing, common presigned URL access, and persisted object metadata headers
 - STS `AssumeRole`, `GetCallerIdentity`, and `GetSessionToken` flows alongside S3
-- GCS object-storage workflows, including media, multipart, resumable upload, rewrite, and persisted object metadata fields
+- GCS object-storage workflows, including media, multipart, resumable upload, rewrite, compose, signed URL access, and persisted object metadata fields
 
 Azure is not implemented in this repository yet. If you need Azure support,
 that is future work rather than a current feature.

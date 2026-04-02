@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/snithish/mockbucket/internal/config"
@@ -525,10 +526,129 @@ func TestGCSPhaseScaffolding(t *testing.T) {
 		}
 	})
 	t.Run("Compose", func(t *testing.T) {
-		t.Skip("Phase 5: compose coverage")
+		ctx := context.Background()
+		_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+			seedGCSServiceAccount(t, runtime, "compose@mock.iam.gserviceaccount.com", "compose-user", "gcs-compose-token")
+		})
+		client := newGCSClient(t, server.URL, "gcs-compose-token")
+		t.Cleanup(func() { _ = client.Close() })
+
+		bucket := client.Bucket("compose-bucket")
+		if err := bucket.Create(ctx, "mock-project", nil); err != nil {
+			t.Fatalf("Create(bucket) error = %v", err)
+		}
+		for _, item := range []struct {
+			key  string
+			body string
+		}{
+			{key: "part-1.txt", body: "hello "},
+			{key: "part-2.txt", body: "world"},
+		} {
+			writer := bucket.Object(item.key).NewWriter(ctx)
+			writer.ChunkSize = 0
+			if _, err := writer.Write([]byte(item.body)); err != nil {
+				t.Fatalf("Write(%s) error = %v", item.key, err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("Close(%s) error = %v", item.key, err)
+			}
+		}
+
+		attrs, err := bucket.Object("composed.txt").ComposerFrom(
+			bucket.Object("part-1.txt"),
+			bucket.Object("part-2.txt"),
+		).Run(ctx)
+		if err != nil {
+			t.Fatalf("ComposerFrom().Run() error = %v", err)
+		}
+		if got, want := attrs.Size, int64(len("hello world")); got != want {
+			t.Fatalf("compose size = %d, want %d", got, want)
+		}
+
+		reader, err := bucket.Object("composed.txt").NewReader(ctx)
+		if err != nil {
+			t.Fatalf("NewReader() error = %v", err)
+		}
+		defer reader.Close()
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		if got, want := string(body), "hello world"; got != want {
+			t.Fatalf("compose body = %q, want %q", got, want)
+		}
 	})
 	t.Run("SignedURLs", func(t *testing.T) {
-		t.Skip("Phase 5: signed URL coverage")
+		ctx := context.Background()
+		_, server := newGCSTestServer(t, func(cfg *mbconfig.Config) {
+			cfg.Frontends.Type = config.FrontendGCS
+			cfg.Seed.GCS.ServiceCredentials = []seed.GCSServiceCredSeed{
+				{
+					ClientEmail: "signed@mockbucket.iam.gserviceaccount.com",
+					Principal:   "signed-user",
+				},
+			}
+		}, nil)
+		serviceAccount := fetchGCSServiceAccountInfo(t, server.URL)
+		client := newGCSClient(t, server.URL, "jwt:"+serviceAccount.ClientEmail)
+		t.Cleanup(func() { _ = client.Close() })
+
+		bucket := client.Bucket("signed-bucket")
+		if err := bucket.Create(ctx, "mock-project", nil); err != nil {
+			t.Fatalf("Create(bucket) error = %v", err)
+		}
+
+		putURL, err := storage.SignedURL("signed-bucket", "signed-put.txt", &storage.SignedURLOptions{
+			GoogleAccessID: serviceAccount.ClientEmail,
+			PrivateKey:     []byte(serviceAccount.PrivateKey),
+			Method:         http.MethodPut,
+			ContentType:    "text/plain",
+			Expires:        time.Now().Add(5 * time.Minute),
+			Scheme:         storage.SigningSchemeV4,
+			Insecure:       true,
+			Hostname:       strings.TrimPrefix(server.URL, "http://"),
+		})
+		if err != nil {
+			t.Fatalf("SignedURL(PUT) error = %v", err)
+		}
+		putReq := mustHTTPRequest(t, ctx, http.MethodPut, putURL, strings.NewReader("signed-body"))
+		putReq.Header.Set("Content-Type", "text/plain")
+		putResp, err := http.DefaultClient.Do(putReq)
+		if err != nil {
+			t.Fatalf("signed PUT request error = %v", err)
+		}
+		_ = putResp.Body.Close()
+		if got, want := putResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("signed PUT status = %d, want %d", got, want)
+		}
+
+		getURL, err := storage.SignedURL("signed-bucket", "signed-put.txt", &storage.SignedURLOptions{
+			GoogleAccessID: serviceAccount.ClientEmail,
+			PrivateKey:     []byte(serviceAccount.PrivateKey),
+			Method:         http.MethodGet,
+			Expires:        time.Now().Add(5 * time.Minute),
+			Scheme:         storage.SigningSchemeV4,
+			Insecure:       true,
+			Hostname:       strings.TrimPrefix(server.URL, "http://"),
+		})
+		if err != nil {
+			t.Fatalf("SignedURL(GET) error = %v", err)
+		}
+		getResp, err := http.DefaultClient.Do(mustHTTPRequest(t, ctx, http.MethodGet, getURL, nil))
+		if err != nil {
+			t.Fatalf("signed GET request error = %v", err)
+		}
+		defer getResp.Body.Close()
+		if got, want := getResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("signed GET status = %d, want %d", got, want)
+		}
+		body, err := io.ReadAll(getResp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		if got, want := string(body), "signed-body"; got != want {
+			t.Fatalf("signed GET body = %q, want %q", got, want)
+		}
 	})
 }
 
@@ -671,6 +791,36 @@ func newGCSTestServer(t *testing.T, configure func(*mbconfig.Config), seed func(
 	server := httptest.NewServer(runtime.HTTPServer.Handler)
 	t.Cleanup(server.Close)
 	return runtime, server
+}
+
+type gcsServiceAccountSecret struct {
+	ClientEmail string `json:"client_email"`
+	PrivateKey  string `json:"private_key"`
+}
+
+func fetchGCSServiceAccountInfo(t *testing.T, endpoint string) gcsServiceAccountSecret {
+	t.Helper()
+	resp, err := http.Get(strings.TrimRight(endpoint, "/") + "/api/v1/gcs/service-account")
+	if err != nil {
+		t.Fatalf("GET /api/v1/gcs/service-account error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200, body=%s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		ServiceAccounts []struct {
+			SecretJSON gcsServiceAccountSecret `json:"secret_json"`
+		} `json:"service_accounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(payload.ServiceAccounts) == 0 {
+		t.Fatal("service_accounts is empty")
+	}
+	return payload.ServiceAccounts[0].SecretJSON
 }
 
 func seedGCSRoleAndAccount(t *testing.T, runtime *Runtime, email, principal, token string) {

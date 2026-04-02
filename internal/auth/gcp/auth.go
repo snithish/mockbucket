@@ -15,16 +15,19 @@ import (
 // Authenticator resolves GCP-style credentials into a core.Subject.
 type Authenticator interface {
 	ResolveBearerToken(ctx context.Context, token string) (core.Subject, error)
+	ResolveSignedURL(ctx context.Context, clientEmail string) (core.Subject, error)
 }
 
 // Authenticate wraps next with GCS-style request authentication.
 // Accepted credential sources (checked in order):
 //  1. Authorization: Bearer <token>  — resolved as a session token
 //  2. access_token query parameter   — resolved as a session token
+//  3. Signed URL query parameters    — resolved by service-account email only
 func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := strings.TrimSpace(r.Header.Get("Authorization"))
 		accessToken := strings.TrimSpace(r.URL.Query().Get("access_token"))
+		signedURLClientEmail, hasSignedURL := signedURLCredentials(r)
 
 		var (
 			subject core.Subject
@@ -36,6 +39,8 @@ func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 			subject, err = resolver.ResolveBearerToken(r.Context(), token)
 		case accessToken != "":
 			subject, err = resolver.ResolveBearerToken(r.Context(), accessToken)
+		case hasSignedURL:
+			subject, err = resolver.ResolveSignedURL(r.Context(), signedURLClientEmail)
 		case header != "":
 			err = core.ErrInvalidArgument
 		default:
@@ -50,6 +55,30 @@ func Authenticate(resolver Authenticator, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(httpx.ContextWithSubject(r.Context(), subject)))
 	})
+}
+
+func signedURLCredentials(r *http.Request) (string, bool) {
+	query := r.URL.Query()
+	if googleAccessID := strings.TrimSpace(query.Get("GoogleAccessId")); googleAccessID != "" && strings.TrimSpace(query.Get("Signature")) != "" {
+		return googleAccessID, true
+	}
+	credential := strings.TrimSpace(query.Get("X-Goog-Credential"))
+	if credential == "" {
+		credential = strings.TrimSpace(query.Get("x-goog-credential"))
+	}
+	signature := strings.TrimSpace(query.Get("X-Goog-Signature"))
+	if signature == "" {
+		signature = strings.TrimSpace(query.Get("x-goog-signature"))
+	}
+	if credential == "" || signature == "" {
+		return "", false
+	}
+	clientEmail, _, _ := strings.Cut(credential, "/")
+	clientEmail = strings.TrimSpace(clientEmail)
+	if clientEmail == "" {
+		return "", false
+	}
+	return clientEmail, true
 }
 
 type tokenResponse struct {

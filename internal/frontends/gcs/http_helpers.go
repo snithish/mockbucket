@@ -61,6 +61,14 @@ type objectPreconditions struct {
 	MetagenerationMatch *int64
 }
 
+type composeRequest struct {
+	SourceObjects []struct {
+		Name       string `json:"name"`
+		Generation int64  `json:"generation,omitempty"`
+	} `json:"sourceObjects"`
+	Destination objectMetadataPayload `json:"destination"`
+}
+
 func parseMaxResults(raw string) int {
 	if raw == "" {
 		return 1000
@@ -313,6 +321,25 @@ func cloneCustomMetadata(metadata map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func extractPrefixedHeaders(headers http.Header, prefix string) map[string]string {
+	var metadata map[string]string
+	prefix = strings.ToLower(prefix)
+	for key, values := range headers {
+		if len(values) == 0 {
+			continue
+		}
+		lowerKey := strings.ToLower(key)
+		if !strings.HasPrefix(lowerKey, prefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		metadata[strings.TrimPrefix(lowerKey, prefix)] = values[0]
+	}
+	return metadata
 }
 
 func objectMetageneration(meta core.ObjectMetadata) string {

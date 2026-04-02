@@ -63,6 +63,8 @@ class GCSCompatSuite(CompatSuite):
         errors += self._test_buckets()
         errors += self._test_objects()
         errors += self._test_multipart()
+        errors += self._test_compose()
+        errors += self._test_signed_urls()
         self._test_duckdb()
         if with_pyspark:
             errors += self._test_pyspark()
@@ -183,6 +185,83 @@ class GCSCompatSuite(CompatSuite):
         blob.delete()
 
         ok("gcs multipart")
+        return 0
+
+    def _test_compose(self) -> int:
+        client = self._make_client()
+        bucket = client.bucket("compat-demo")
+
+        src1 = bucket.blob("compat/compose-src-1.txt")
+        src2 = bucket.blob("compat/compose-src-2.txt")
+        dst = bucket.blob("compat/compose-dst.txt")
+        src1.upload_from_string(b"hello ")
+        src2.upload_from_string(b"world")
+
+        dst.compose([src1, src2])
+        content = dst.download_as_bytes()
+        if content != b"hello world":
+            fail(f"gcs compose - content={content!r}, want b'hello world'")
+            return 1
+
+        src1.delete()
+        src2.delete()
+        dst.delete()
+
+        ok("gcs compose")
+        return 0
+
+    def _test_signed_urls(self) -> int:
+        service_account_info = self._fetch_service_account_info()
+        client = self._make_client()
+        bucket = client.bucket("compat-demo")
+        blob = bucket.blob("compat/signed-url.txt")
+
+        signed_put = blob.generate_signed_url(
+            expiration=300,
+            method="PUT",
+            content_type="text/plain",
+            api_access_endpoint=ENDPOINT,
+            version="v4",
+            service_account_email=service_account_info["client_email"],
+            credentials=client._credentials,
+        )
+        put_req = urllib.request.Request(
+            signed_put,
+            data=b"signed-url-body",
+            method="PUT",
+            headers={"Content-Type": "text/plain"},
+        )
+        try:
+            with urllib.request.urlopen(put_req, timeout=1.0) as resp:
+                put_status = resp.status
+        except Exception as err:
+            fail(f"gcs signed urls - PUT failed: {err}")
+            return 1
+        if put_status >= 400:
+            fail(f"gcs signed urls - PUT status={put_status}")
+            return 1
+
+        signed_get = blob.generate_signed_url(
+            expiration=300,
+            method="GET",
+            api_access_endpoint=ENDPOINT,
+            version="v4",
+            service_account_email=service_account_info["client_email"],
+            credentials=client._credentials,
+        )
+        try:
+            with urllib.request.urlopen(signed_get, timeout=1.0) as resp:
+                content = resp.read()
+        except Exception as err:
+            fail(f"gcs signed urls - GET failed: {err}")
+            return 1
+        if content != b"signed-url-body":
+            fail(f"gcs signed urls - content={content!r}, want b'signed-url-body'")
+            return 1
+
+        blob.delete()
+
+        ok("gcs signed urls")
         return 0
 
     def _test_duckdb(self) -> None:

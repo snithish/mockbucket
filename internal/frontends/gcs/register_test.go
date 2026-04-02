@@ -303,6 +303,82 @@ func TestRegisterRewriteObjectCopiesSource(t *testing.T) {
 	}
 }
 
+func TestRegisterComposeObjectConcatenatesSources(t *testing.T) {
+	fixture := newGCSTestFixture(t)
+	defer fixture.cleanup()
+	ctx := context.Background()
+	if err := fixture.metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	for _, item := range []struct {
+		key  string
+		body string
+	}{
+		{key: "part-1.txt", body: "hello "},
+		{key: "part-2.txt", body: "world"},
+	} {
+		putReq := httptest.NewRequest(http.MethodPost, "/upload/storage/v1/b/demo/o?uploadType=media&name="+item.key, strings.NewReader(item.body))
+		putReq.Header.Set("Authorization", "Bearer gcs-token")
+		putRec := httptest.NewRecorder()
+		fixture.mux.ServeHTTP(putRec, putReq)
+		if putRec.Code != http.StatusOK {
+			t.Fatalf("upload %q status = %d, want %d, body = %q", item.key, putRec.Code, http.StatusOK, putRec.Body.String())
+		}
+	}
+
+	composeReq := httptest.NewRequest(http.MethodPost, "/storage/v1/b/demo/o/composed.txt/compose", strings.NewReader(`{"sourceObjects":[{"name":"part-1.txt"},{"name":"part-2.txt"}]}`))
+	composeReq.Header.Set("Authorization", "Bearer gcs-token")
+	composeReq.Header.Set("Content-Type", "application/json")
+	composeRec := httptest.NewRecorder()
+	fixture.mux.ServeHTTP(composeRec, composeReq)
+	if composeRec.Code != http.StatusOK {
+		t.Fatalf("compose status = %d, want %d, body = %q", composeRec.Code, http.StatusOK, composeRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/storage/v1/b/demo/o/composed.txt?alt=media", nil)
+	getReq.Header.Set("Authorization", "Bearer gcs-token")
+	getRec := httptest.NewRecorder()
+	fixture.mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	if got, want := getRec.Body.String(), "hello world"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestRegisterSignedURLPutStoresObject(t *testing.T) {
+	fixture := newGCSTestFixture(t)
+	defer fixture.cleanup()
+	ctx := context.Background()
+	if err := fixture.metadata.CreateBucket(ctx, "demo"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/demo/signed.txt?GoogleAccessId=gcs@mock.iam.gserviceaccount.com&Signature=fake", strings.NewReader("signed-body"))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	fixture.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signed PUT status = %d, want %d, body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/storage/v1/b/demo/o/signed.txt?alt=media", nil)
+	getReq.Header.Set("Authorization", "Bearer gcs-token")
+	getRec := httptest.NewRecorder()
+	fixture.mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	if got, want := getRec.Body.String(), "signed-body"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if got, want := getRec.Header().Get("Content-Type"), "text/plain"; got != want {
+		t.Fatalf("content type = %q, want %q", got, want)
+	}
+}
+
 func TestRegisterGetObjectMetadataIncludesGeneration(t *testing.T) {
 	fixture := newGCSTestFixture(t)
 	defer fixture.cleanup()

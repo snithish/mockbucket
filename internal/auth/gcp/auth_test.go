@@ -15,7 +15,8 @@ import (
 
 // mockAuth implements Authenticator for testing.
 type mockAuth struct {
-	tokens map[string]core.Subject
+	tokens         map[string]core.Subject
+	signedSubjects map[string]core.Subject
 }
 
 func (m mockAuth) ResolveBearerToken(_ context.Context, token string) (core.Subject, error) {
@@ -26,10 +27,19 @@ func (m mockAuth) ResolveBearerToken(_ context.Context, token string) (core.Subj
 	return s, nil
 }
 
+func (m mockAuth) ResolveSignedURL(_ context.Context, clientEmail string) (core.Subject, error) {
+	s, ok := m.signedSubjects[clientEmail]
+	if !ok {
+		return core.Subject{}, core.ErrNotFound
+	}
+	return s, nil
+}
+
 func newMockAuth() mockAuth {
 	admin := core.Subject{PrincipalName: "admin"}
 	return mockAuth{
-		tokens: map[string]core.Subject{"test-token": admin},
+		tokens:         map[string]core.Subject{"test-token": admin},
+		signedSubjects: map[string]core.Subject{"sa@mock.iam.gserviceaccount.com": admin},
 	}
 }
 
@@ -53,6 +63,17 @@ func TestAuthenticate_AccessTokenQueryParam(t *testing.T) {
 	h := Authenticate(newMockAuth(), http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodGet, "/?access_token=test-token", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestAuthenticate_SignedURLQueryParams(t *testing.T) {
+	h := Authenticate(newMockAuth(), http.HandlerFunc(okHandler))
+
+	req := httptest.NewRequest(http.MethodGet, "/bucket/object?GoogleAccessId=sa@mock.iam.gserviceaccount.com&Signature=fake", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

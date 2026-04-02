@@ -75,6 +75,10 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, g
 		case http.MethodDelete:
 			handleDeleteObject(w, r, deps, bucket, key)
 		case http.MethodPost:
+			if dstKey, ok := composeRequestObject(key); ok {
+				handleComposeObject(w, r, deps, bucket, dstKey)
+				return
+			}
 			if srcKey, dstBucket, dstKey, ok := rewriteRequest(r, key); ok {
 				handleRewriteObject(w, r, deps, bucket, srcKey, dstBucket, dstKey)
 				return
@@ -120,16 +124,19 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, g
 	mux.Handle(resumableBasePath+"/{session}", resumableUploadHandler)
 	mux.HandleFunc("/oauth2/v4/token", authgcp.TokenEndpoint(deps.AuthResolver, deps.SessionManager))
 	mux.Handle("/{bucket}/{object...}", authgcp.Authenticate(deps.AuthResolver, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
 		key, err := pathObject(r)
 		if err != nil {
 			writeError(w, core.ErrInvalidArgument)
 			return
 		}
-		handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
+		switch r.Method {
+		case http.MethodGet:
+			handleGetObject(w, r, deps, r.PathValue("bucket"), key, true)
+		case http.MethodPut:
+			handleSignedURLUpload(w, r, deps, r.PathValue("bucket"), key)
+		default:
+			http.NotFound(w, r)
+		}
 	})))
 }
 
@@ -655,6 +662,145 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 	})
 }
 
+func handleComposeObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	var payload composeRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if len(payload.SourceObjects) == 0 {
+		writeError(w, core.ErrInvalidArgument)
+		return
+	}
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
+		return
+	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !validateWriteObjectPreconditions(w, r, deps, bucket, key, preconditions) {
+		return
+	}
+
+	readers := make([]io.Reader, 0, len(payload.SourceObjects))
+	closers := make([]io.Closer, 0, len(payload.SourceObjects))
+	defer func() {
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
+	}()
+
+	var firstSourceMeta core.ObjectMetadata
+	for index, source := range payload.SourceObjects {
+		sourceKey := strings.TrimSpace(source.Name)
+		if sourceKey == "" {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+		sourceMeta, ok := loadObject(w, r, deps, bucket, sourceKey)
+		if !ok {
+			return
+		}
+		if source.Generation > 0 && sourceMeta.Generation != source.Generation {
+			writePreconditionFailed(w)
+			return
+		}
+		reader, _, err := deps.Objects.OpenObject(r.Context(), bucket, sourceKey)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if index == 0 {
+			firstSourceMeta = sourceMeta
+		}
+		readers = append(readers, reader)
+		closers = append(closers, reader)
+	}
+
+	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, io.MultiReader(readers...))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if payload.Destination.ContentType == "" {
+		payload.Destination.ContentType = firstSourceMeta.ContentType
+	}
+	if payload.Destination.CacheControl == "" {
+		payload.Destination.CacheControl = firstSourceMeta.CacheControl
+	}
+	if payload.Destination.ContentDisposition == "" {
+		payload.Destination.ContentDisposition = firstSourceMeta.ContentDisposition
+	}
+	if payload.Destination.ContentEncoding == "" {
+		payload.Destination.ContentEncoding = firstSourceMeta.ContentEncoding
+	}
+	if payload.Destination.ContentLanguage == "" {
+		payload.Destination.ContentLanguage = firstSourceMeta.ContentLanguage
+	}
+	if len(payload.Destination.Metadata) == 0 {
+		payload.Destination.Metadata = cloneCustomMetadata(firstSourceMeta.CustomMetadata)
+	}
+	applyObjectMetadata(&meta, payload.Destination)
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err = deps.Metadata.GetObject(r.Context(), bucket, key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newObjectResponse(meta, crc32c))
+}
+
+func handleSignedURLUpload(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := loadBucket(w, r, deps, bucket); !ok {
+		return
+	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !validateWriteObjectPreconditions(w, r, deps, bucket, key, preconditions) {
+		return
+	}
+	meta, _, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, r.Body)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	applyObjectMetadata(&meta, objectMetadataPayload{
+		ContentType:        strings.TrimSpace(r.Header.Get("Content-Type")),
+		CacheControl:       strings.TrimSpace(r.Header.Get("Cache-Control")),
+		ContentDisposition: strings.TrimSpace(r.Header.Get("Content-Disposition")),
+		ContentEncoding:    strings.TrimSpace(r.Header.Get("Content-Encoding")),
+		ContentLanguage:    strings.TrimSpace(r.Header.Get("Content-Language")),
+		Metadata:           extractPrefixedHeaders(r.Header, "x-goog-meta-"),
+	})
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err = deps.Metadata.GetObject(r.Context(), bucket, key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("ETag", meta.ETag)
+	w.WriteHeader(http.StatusOK)
+}
+
 func putObjectWithCRC32C(ctx context.Context, deps common.Dependencies, bucket, key string, src io.Reader) (core.ObjectMetadata, string, error) {
 	hasher := crc32.New(crc32.MakeTable(crc32.Castagnoli))
 	tee := io.TeeReader(src, hasher)
@@ -812,6 +958,18 @@ func objectGeneration(meta core.ObjectMetadata) string {
 		generation = 1
 	}
 	return strconv.FormatInt(generation, 10)
+}
+
+func composeRequestObject(rawObject string) (string, bool) {
+	const marker = "/compose"
+	if !strings.HasSuffix(rawObject, marker) {
+		return "", false
+	}
+	key := strings.TrimSuffix(rawObject, marker)
+	if strings.TrimSpace(key) == "" {
+		return "", false
+	}
+	return key, true
 }
 
 func deleteObjectTree(ctx context.Context, deps common.Dependencies, bucket, key string) error {

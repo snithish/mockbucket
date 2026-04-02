@@ -154,6 +154,14 @@ func (r Resolver) ResolveBearerToken(ctx context.Context, token string) (core.Su
 	return r.SessionManager.ResolveSession(ctx, token)
 }
 
+func (r Resolver) ResolveSignedURL(ctx context.Context, clientEmail string) (core.Subject, error) {
+	sa, err := r.Store.FindServiceAccountByEmail(ctx, clientEmail)
+	if err != nil {
+		return core.Subject{}, err
+	}
+	return core.Subject{PrincipalName: sa.Principal}, nil
+}
+
 func randomHex(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
