@@ -27,17 +27,23 @@ type listBucketsResponse struct {
 }
 
 type objectResponse struct {
-	Kind           string `json:"kind"`
-	ID             string `json:"id"`
-	Bucket         string `json:"bucket"`
-	Name           string `json:"name"`
-	Size           string `json:"size"`
-	CRC32C         string `json:"crc32c,omitempty"`
-	ETag           string `json:"etag"`
-	Generation     string `json:"generation"`
-	Metageneration string `json:"metageneration"`
-	TimeCreated    string `json:"timeCreated"`
-	Updated        string `json:"updated"`
+	Kind               string            `json:"kind"`
+	ID                 string            `json:"id"`
+	Bucket             string            `json:"bucket"`
+	Name               string            `json:"name"`
+	Size               string            `json:"size"`
+	CRC32C             string            `json:"crc32c,omitempty"`
+	ETag               string            `json:"etag"`
+	Generation         string            `json:"generation"`
+	Metageneration     string            `json:"metageneration"`
+	TimeCreated        string            `json:"timeCreated"`
+	Updated            string            `json:"updated"`
+	ContentType        string            `json:"contentType,omitempty"`
+	CacheControl       string            `json:"cacheControl,omitempty"`
+	ContentDisposition string            `json:"contentDisposition,omitempty"`
+	ContentEncoding    string            `json:"contentEncoding,omitempty"`
+	ContentLanguage    string            `json:"contentLanguage,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
 type listObjectsResponse struct {
@@ -179,18 +185,60 @@ func rewriteRequest(r *http.Request, rawObject string) (string, string, string, 
 func newObjectResponse(meta core.ObjectMetadata, crc32c string) objectResponse {
 	generation := objectGeneration(meta)
 	return objectResponse{
-		Kind:           "storage#object",
-		ID:             meta.Bucket + "/" + meta.Key + "/" + generation,
-		Bucket:         meta.Bucket,
-		Name:           meta.Key,
-		Size:           strconv.FormatInt(meta.Size, 10),
-		CRC32C:         crc32c,
-		ETag:           strings.Trim(meta.ETag, "\""),
-		Generation:     generation,
-		Metageneration: "1",
-		TimeCreated:    meta.CreatedAt.UTC().Format(time.RFC3339),
-		Updated:        meta.ModifiedAt.UTC().Format(time.RFC3339),
+		Kind:               "storage#object",
+		ID:                 meta.Bucket + "/" + meta.Key + "/" + generation,
+		Bucket:             meta.Bucket,
+		Name:               meta.Key,
+		Size:               strconv.FormatInt(meta.Size, 10),
+		CRC32C:             crc32c,
+		ETag:               strings.Trim(meta.ETag, "\""),
+		Generation:         generation,
+		Metageneration:     "1",
+		TimeCreated:        meta.CreatedAt.UTC().Format(time.RFC3339),
+		Updated:            meta.ModifiedAt.UTC().Format(time.RFC3339),
+		ContentType:        meta.ContentType,
+		CacheControl:       meta.CacheControl,
+		ContentDisposition: meta.ContentDisposition,
+		ContentEncoding:    meta.ContentEncoding,
+		ContentLanguage:    meta.ContentLanguage,
+		Metadata:           cloneCustomMetadata(meta.CustomMetadata),
 	}
+}
+
+func applyObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata, defaultContentType string) {
+	contentType := meta.ContentType
+	if contentType == "" {
+		contentType = defaultContentType
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if meta.CacheControl != "" {
+		w.Header().Set("Cache-Control", meta.CacheControl)
+	}
+	if meta.ContentDisposition != "" {
+		w.Header().Set("Content-Disposition", meta.ContentDisposition)
+	}
+	if meta.ContentEncoding != "" {
+		w.Header().Set("Content-Encoding", meta.ContentEncoding)
+	}
+	if meta.ContentLanguage != "" {
+		w.Header().Set("Content-Language", meta.ContentLanguage)
+	}
+	for key, value := range meta.CustomMetadata {
+		w.Header().Set("x-goog-meta-"+key, value)
+	}
+}
+
+func cloneCustomMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func newBucketResponse(name string, createdAt time.Time) bucketResponse {

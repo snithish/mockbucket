@@ -265,10 +265,86 @@ func TestS3PresignedGetPutAndHead(t *testing.T) {
 	}
 }
 
-func TestAWSPhaseScaffolding(t *testing.T) {
-	t.Run("MetadataRoundTrip", func(t *testing.T) {
-		t.Skip("Phase 3: persisted object metadata coverage")
+func TestS3MetadataRoundTripAndCopyPreservation(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer runtime.Close()
+	ctx := context.Background()
+	s3Client := newS3Client(t, runtime, "admin", "admin-secret", "")
+
+	_, err := s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:             aws.String("demo"),
+		Key:                aws.String("meta.txt"),
+		Body:               bytes.NewReader([]byte("hello")),
+		ContentType:        aws.String("text/plain"),
+		CacheControl:       aws.String("max-age=60"),
+		ContentDisposition: aws.String("attachment; filename=meta.txt"),
+		ContentEncoding:    aws.String("gzip"),
+		ContentLanguage:    aws.String("en"),
+		Metadata:           map[string]string{"team": "platform"},
 	})
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+
+	headOut, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("meta.txt"),
+	})
+	if err != nil {
+		t.Fatalf("HeadObject() error = %v", err)
+	}
+	if got, want := aws.ToString(headOut.ContentType), "text/plain"; got != want {
+		t.Fatalf("HeadObject() content type = %q, want %q", got, want)
+	}
+	if got, want := aws.ToString(headOut.CacheControl), "max-age=60"; got != want {
+		t.Fatalf("HeadObject() cache control = %q, want %q", got, want)
+	}
+	if got, want := headOut.Metadata["team"], "platform"; got != want {
+		t.Fatalf("HeadObject() metadata team = %q, want %q", got, want)
+	}
+
+	getOut, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("meta.txt"),
+	})
+	if err != nil {
+		t.Fatalf("GetObject() error = %v", err)
+	}
+	defer getOut.Body.Close()
+	if got, want := aws.ToString(getOut.ContentDisposition), "attachment; filename=meta.txt"; got != want {
+		t.Fatalf("GetObject() content disposition = %q, want %q", got, want)
+	}
+	if got, want := aws.ToString(getOut.ContentEncoding), "gzip"; got != want {
+		t.Fatalf("GetObject() content encoding = %q, want %q", got, want)
+	}
+	if got, want := aws.ToString(getOut.ContentLanguage), "en"; got != want {
+		t.Fatalf("GetObject() content language = %q, want %q", got, want)
+	}
+
+	_, err = s3Client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String("demo"),
+		Key:        aws.String("meta-copy.txt"),
+		CopySource: aws.String("/demo/meta.txt"),
+	})
+	if err != nil {
+		t.Fatalf("CopyObject() error = %v", err)
+	}
+	copyHead, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("meta-copy.txt"),
+	})
+	if err != nil {
+		t.Fatalf("HeadObject(copy) error = %v", err)
+	}
+	if got, want := aws.ToString(copyHead.ContentType), "text/plain"; got != want {
+		t.Fatalf("HeadObject(copy) content type = %q, want %q", got, want)
+	}
+	if got, want := copyHead.Metadata["team"], "platform"; got != want {
+		t.Fatalf("HeadObject(copy) metadata team = %q, want %q", got, want)
+	}
+}
+
+func TestAWSPhaseScaffolding(t *testing.T) {
 	t.Run("ConditionalHeaders", func(t *testing.T) {
 		t.Skip("Phase 4: conditional request coverage")
 	})

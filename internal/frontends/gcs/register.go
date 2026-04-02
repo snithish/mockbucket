@@ -235,12 +235,28 @@ func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Depen
 }
 
 type resumableUpload struct {
-	Bucket string
-	Key    string
-	Path   string
+	Bucket             string
+	Key                string
+	Path               string
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	ContentEncoding    string
+	ContentLanguage    string
+	CustomMetadata     map[string]string
 
 	mu       sync.Mutex
 	received int64
+}
+
+type objectMetadataPayload struct {
+	Name               string            `json:"name"`
+	ContentType        string            `json:"contentType"`
+	CacheControl       string            `json:"cacheControl"`
+	ContentDisposition string            `json:"contentDisposition"`
+	ContentEncoding    string            `json:"contentEncoding"`
+	ContentLanguage    string            `json:"contentLanguage"`
+	Metadata           map[string]string `json:"metadata"`
 }
 
 func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Dependencies, resumableUploads *sync.Map, bucket string) {
@@ -258,8 +274,19 @@ func handleUploadObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 }
 
 func handleResumableUploadInit(w http.ResponseWriter, r *http.Request, deps common.Dependencies, resumableUploads *sync.Map, bucket string) {
-	key, ok := decodeResumableUploadKey(w, r)
-	if !ok {
+	var payload objectMetadataPayload
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err != io.EOF {
+			writeError(w, core.ErrInvalidArgument)
+			return
+		}
+	}
+	key := strings.TrimSpace(r.URL.Query().Get("name"))
+	if key == "" {
+		key = strings.TrimSpace(payload.Name)
+	}
+	if key == "" {
+		writeError(w, core.ErrInvalidArgument)
 		return
 	}
 	if !requireAuthenticatedRequest(w, r) {
@@ -284,7 +311,17 @@ func handleResumableUploadInit(w http.ResponseWriter, r *http.Request, deps comm
 		writeError(w, err)
 		return
 	}
-	resumableUploads.Store(sessionID, &resumableUpload{Bucket: bucket, Key: key, Path: tempPath})
+	resumableUploads.Store(sessionID, &resumableUpload{
+		Bucket:             bucket,
+		Key:                key,
+		Path:               tempPath,
+		ContentType:        firstNonEmpty(strings.TrimSpace(payload.ContentType), strings.TrimSpace(r.Header.Get("X-Upload-Content-Type"))),
+		CacheControl:       strings.TrimSpace(payload.CacheControl),
+		ContentDisposition: strings.TrimSpace(payload.ContentDisposition),
+		ContentEncoding:    strings.TrimSpace(payload.ContentEncoding),
+		ContentLanguage:    strings.TrimSpace(payload.ContentLanguage),
+		CustomMetadata:     cloneCustomMetadata(payload.Metadata),
+	})
 	w.Header().Set("Location", resumableUploadLocation(r, sessionID))
 	w.WriteHeader(http.StatusOK)
 }
@@ -356,6 +393,9 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, err)
 		return
 	}
+	applyObjectMetadata(&meta, objectMetadataPayload{
+		ContentType: strings.TrimSpace(r.Header.Get("Content-Type")),
+	})
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
@@ -378,10 +418,8 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 	}
 	reader := multipart.NewReader(r.Body, boundary)
 	var (
-		metadata struct {
-			Name string `json:"name"`
-		}
-		media io.Reader
+		metadata objectMetadataPayload
+		media    io.Reader
 	)
 	for i := 0; i < 2; i++ {
 		part, err := reader.NextPart()
@@ -422,6 +460,10 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		writeError(w, err)
 		return
 	}
+	if metadata.ContentType == "" {
+		metadata.ContentType = strings.TrimSpace(r.Header.Get("Content-Type"))
+	}
+	applyObjectMetadata(&meta, metadata)
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
@@ -456,7 +498,7 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	defer reader.Close()
-	w.Header().Set("Content-Type", "application/octet-stream")
+	applyObjectHeaders(w, meta, "application/octet-stream")
 	w.Header().Set("ETag", meta.ETag)
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.WriteHeader(http.StatusOK)
@@ -487,6 +529,10 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 	if _, ok := loadBucket(w, r, deps, dstBucket); !ok {
 		return
 	}
+	srcMeta, ok := loadObject(w, r, deps, srcBucket, srcKey)
+	if !ok {
+		return
+	}
 	reader, _, err := deps.Objects.OpenObject(r.Context(), srcBucket, srcKey)
 	if err != nil {
 		writeError(w, err)
@@ -499,6 +545,14 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		writeError(w, err)
 		return
 	}
+	applyObjectMetadata(&meta, objectMetadataPayload{
+		ContentType:        srcMeta.ContentType,
+		CacheControl:       srcMeta.CacheControl,
+		ContentDisposition: srcMeta.ContentDisposition,
+		ContentEncoding:    srcMeta.ContentEncoding,
+		ContentLanguage:    srcMeta.ContentLanguage,
+		Metadata:           cloneCustomMetadata(srcMeta.CustomMetadata),
+	})
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
@@ -635,6 +689,14 @@ func finalizeResumableUpload(
 	if err != nil {
 		return err
 	}
+	applyObjectMetadata(&meta, objectMetadataPayload{
+		ContentType:        upload.ContentType,
+		CacheControl:       upload.CacheControl,
+		ContentDisposition: upload.ContentDisposition,
+		ContentEncoding:    upload.ContentEncoding,
+		ContentLanguage:    upload.ContentLanguage,
+		Metadata:           cloneCustomMetadata(upload.CustomMetadata),
+	})
 	if err := common.CommitObject(ctx, deps, meta); err != nil {
 		return err
 	}
@@ -737,4 +799,22 @@ func newResumableUploadID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func applyObjectMetadata(meta *core.ObjectMetadata, payload objectMetadataPayload) {
+	meta.ContentType = strings.TrimSpace(payload.ContentType)
+	meta.CacheControl = strings.TrimSpace(payload.CacheControl)
+	meta.ContentDisposition = strings.TrimSpace(payload.ContentDisposition)
+	meta.ContentEncoding = strings.TrimSpace(payload.ContentEncoding)
+	meta.ContentLanguage = strings.TrimSpace(payload.ContentLanguage)
+	meta.CustomMetadata = cloneCustomMetadata(payload.Metadata)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

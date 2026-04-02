@@ -3,13 +3,19 @@ package core
 import "time"
 
 type ObjectMetadata struct {
-	Bucket     string
-	Key        string
-	Path       string
-	ETag       string
-	Size       int64
-	CreatedAt  time.Time
-	ModifiedAt time.Time
+	Bucket             string
+	Key                string
+	Path               string
+	ETag               string
+	Size               int64
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	ContentEncoding    string
+	ContentLanguage    string
+	CustomMetadata     map[string]string
+	CreatedAt          time.Time
+	ModifiedAt         time.Time
 }
 
 type Bucket struct {
@@ -40,10 +46,16 @@ type Session struct {
 }
 
 type MultipartUpload struct {
-	UploadID  string
-	Bucket    string
-	Key       string
-	CreatedAt time.Time
+	UploadID           string
+	Bucket             string
+	Key                string
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	ContentEncoding    string
+	ContentLanguage    string
+	CustomMetadata     map[string]string
+	CreatedAt          time.Time
 }
 
 type MultipartPart struct {

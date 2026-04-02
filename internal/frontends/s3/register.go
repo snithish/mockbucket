@@ -141,6 +141,17 @@ func handlePutObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 		writeError(w, err)
 		return
 	}
+	requestMeta := objectMetadataFromRequest(r)
+	meta.ContentType = requestMeta.ContentType
+	meta.CacheControl = requestMeta.CacheControl
+	meta.ContentDisposition = requestMeta.ContentDisposition
+	meta.ContentEncoding = requestMeta.ContentEncoding
+	meta.ContentLanguage = requestMeta.ContentLanguage
+	meta.CustomMetadata = requestMeta.CustomMetadata
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
 	setObjectHeaders(w, meta)
 	w.WriteHeader(http.StatusOK)
 }
@@ -152,7 +163,9 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 	}
 	defer reader.Close()
 	setObjectHeaders(w, meta)
-	w.Header().Set("Content-Type", "application/octet-stream")
+	if meta.ContentType == "" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader == "" || meta.Size <= 0 {
@@ -217,6 +230,11 @@ func handleCopyObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 		writeBucketError(w, err)
 		return
 	}
+	srcMeta, err := deps.Metadata.GetObject(r.Context(), srcBucket, srcKey)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	reader, _, err := deps.Objects.OpenObject(r.Context(), srcBucket, srcKey)
 	if err != nil {
 		writeError(w, err)
@@ -226,6 +244,27 @@ func handleCopyObject(w http.ResponseWriter, r *http.Request, deps common.Depend
 
 	meta, err := common.StoreObject(r.Context(), deps, bucket, key, reader)
 	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Amz-Metadata-Directive")), "REPLACE") {
+		requestMeta := objectMetadataFromRequest(r)
+		meta.ContentType = requestMeta.ContentType
+		meta.CacheControl = requestMeta.CacheControl
+		meta.ContentDisposition = requestMeta.ContentDisposition
+		meta.ContentEncoding = requestMeta.ContentEncoding
+		meta.ContentLanguage = requestMeta.ContentLanguage
+		meta.CustomMetadata = requestMeta.CustomMetadata
+	} else {
+		preserved := copyObjectMetadata(srcMeta)
+		meta.ContentType = preserved.ContentType
+		meta.CacheControl = preserved.CacheControl
+		meta.ContentDisposition = preserved.ContentDisposition
+		meta.ContentEncoding = preserved.ContentEncoding
+		meta.ContentLanguage = preserved.ContentLanguage
+		meta.CustomMetadata = preserved.CustomMetadata
+	}
+	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -309,10 +348,16 @@ func handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, deps co
 		return
 	}
 	upload := core.MultipartUpload{
-		UploadID:  uploadID,
-		Bucket:    bucket,
-		Key:       key,
-		CreatedAt: time.Now().UTC(),
+		UploadID:           uploadID,
+		Bucket:             bucket,
+		Key:                key,
+		ContentType:        strings.TrimSpace(r.Header.Get("Content-Type")),
+		CacheControl:       strings.TrimSpace(r.Header.Get("Cache-Control")),
+		ContentDisposition: strings.TrimSpace(r.Header.Get("Content-Disposition")),
+		ContentEncoding:    sanitizeS3ContentEncoding(r.Header.Values("Content-Encoding")),
+		ContentLanguage:    strings.TrimSpace(r.Header.Get("Content-Language")),
+		CustomMetadata:     extractPrefixedHeaders(r.Header, "x-amz-meta-"),
+		CreatedAt:          time.Now().UTC(),
 	}
 	if err := deps.Metadata.CreateMultipartUpload(r.Context(), upload); err != nil {
 		writeError(w, err)
@@ -391,6 +436,12 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, deps 
 		writeError(w, err)
 		return
 	}
+	meta.ContentType = upload.ContentType
+	meta.CacheControl = upload.CacheControl
+	meta.ContentDisposition = upload.ContentDisposition
+	meta.ContentEncoding = upload.ContentEncoding
+	meta.ContentLanguage = upload.ContentLanguage
+	meta.CustomMetadata = cloneCustomMetadata(upload.CustomMetadata)
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
 		writeError(w, err)
 		return

@@ -61,6 +61,55 @@ func TestFilesystemAndSQLiteObjectLifecycle(t *testing.T) {
 	}
 }
 
+func TestObjectMetadataRoundTripAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "mockbucket.db")
+
+	metadata, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, core.ObjectMetadata{
+		Bucket:             "demo",
+		Key:                "meta.txt",
+		Path:               "/tmp/meta.txt",
+		ETag:               "etag",
+		Size:               5,
+		ContentType:        "text/plain",
+		CacheControl:       "max-age=60",
+		ContentDisposition: "attachment; filename=meta.txt",
+		ContentEncoding:    "gzip",
+		ContentLanguage:    "en",
+		CustomMetadata:     map[string]string{"team": "platform"},
+		CreatedAt:          time.Now().UTC(),
+		ModifiedAt:         time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if err := metadata.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite(reopen) error = %v", err)
+	}
+	defer reopened.Close()
+	stored, err := reopened.GetObject(ctx, "demo", "meta.txt")
+	if err != nil {
+		t.Fatalf("GetObject() error = %v", err)
+	}
+	if got, want := stored.ContentType, "text/plain"; got != want {
+		t.Fatalf("content type = %q, want %q", got, want)
+	}
+	if got, want := stored.CacheControl, "max-age=60"; got != want {
+		t.Fatalf("cache control = %q, want %q", got, want)
+	}
+	if got, want := stored.CustomMetadata["team"], "platform"; got != want {
+		t.Fatalf("custom metadata team = %q, want %q", got, want)
+	}
+}
+
 func TestSessionRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
@@ -125,13 +174,32 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 		t.Fatalf("EnsureBucket() error = %v", err)
 	}
 	upload := core.MultipartUpload{
-		UploadID:  "upload-1",
-		Bucket:    "demo",
-		Key:       "multipart.txt",
-		CreatedAt: time.Now().UTC(),
+		UploadID:           "upload-1",
+		Bucket:             "demo",
+		Key:                "multipart.txt",
+		ContentType:        "text/plain",
+		CacheControl:       "max-age=30",
+		ContentDisposition: "inline",
+		ContentEncoding:    "gzip",
+		ContentLanguage:    "en",
+		CustomMetadata:     map[string]string{"origin": "multipart"},
+		CreatedAt:          time.Now().UTC(),
 	}
 	if err := metadata.CreateMultipartUpload(ctx, upload); err != nil {
 		t.Fatalf("CreateMultipartUpload() error = %v", err)
+	}
+	storedUpload, err := metadata.GetMultipartUpload(ctx, upload.UploadID)
+	if err != nil {
+		t.Fatalf("GetMultipartUpload() error = %v", err)
+	}
+	if got, want := storedUpload.Key, upload.Key; got != want {
+		t.Fatalf("upload key = %q, want %q", got, want)
+	}
+	if got, want := storedUpload.ContentType, "text/plain"; got != want {
+		t.Fatalf("upload content type = %q, want %q", got, want)
+	}
+	if got, want := storedUpload.CustomMetadata["origin"], "multipart"; got != want {
+		t.Fatalf("upload custom metadata = %q, want %q", got, want)
 	}
 	part1, err := objects.PutMultipartPart(ctx, upload.UploadID, 1, bytes.NewBufferString("hello "))
 	if err != nil {

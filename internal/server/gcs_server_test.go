@@ -296,10 +296,132 @@ func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
 	}
 }
 
-func TestGCSPhaseScaffolding(t *testing.T) {
-	t.Run("MetadataRoundTrip", func(t *testing.T) {
-		t.Skip("Phase 3: persisted metadata coverage")
+func TestGCSMetadataRoundTripAndRewritePreservation(t *testing.T) {
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSServiceAccount(t, runtime, "meta@mock.iam.gserviceaccount.com", "meta-user", "gcs-meta-token")
 	})
+	ctx := context.Background()
+
+	createBucketReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/storage/v1/b", "gcs-meta-token", strings.NewReader(`{"name":"meta-bucket"}`))
+	createBucketReq.Header.Set("Content-Type", "application/json")
+	createBucketResp, err := http.DefaultClient.Do(createBucketReq)
+	if err != nil {
+		t.Fatalf("create bucket request error = %v", err)
+	}
+	_ = createBucketResp.Body.Close()
+
+	var payload bytes.Buffer
+	writer := multipart.NewWriter(&payload)
+	metaHeader := textproto.MIMEHeader{}
+	metaHeader.Set("Content-Type", "application/json; charset=UTF-8")
+	metaPart, err := writer.CreatePart(metaHeader)
+	if err != nil {
+		t.Fatalf("CreatePart(metadata) error = %v", err)
+	}
+	if err := json.NewEncoder(metaPart).Encode(map[string]any{
+		"name":               "meta.txt",
+		"contentType":        "text/plain",
+		"cacheControl":       "max-age=60",
+		"contentDisposition": "attachment; filename=meta.txt",
+		"contentEncoding":    "gzip",
+		"contentLanguage":    "en",
+		"metadata": map[string]string{
+			"team": "platform",
+		},
+	}); err != nil {
+		t.Fatalf("Encode(metadata) error = %v", err)
+	}
+	bodyHeader := textproto.MIMEHeader{}
+	bodyHeader.Set("Content-Type", "application/octet-stream")
+	bodyPart, err := writer.CreatePart(bodyHeader)
+	if err != nil {
+		t.Fatalf("CreatePart(body) error = %v", err)
+	}
+	if _, err := bodyPart.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write(body) error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	uploadReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/upload/storage/v1/b/meta-bucket/o?uploadType=multipart", "gcs-meta-token", &payload)
+	uploadReq.Header.Set("Content-Type", "multipart/related; boundary="+writer.Boundary())
+	uploadResp, err := http.DefaultClient.Do(uploadReq)
+	if err != nil {
+		t.Fatalf("upload request error = %v", err)
+	}
+	if uploadResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(uploadResp.Body)
+		t.Fatalf("upload status = %d, want %d, body=%s", uploadResp.StatusCode, http.StatusOK, string(body))
+	}
+	_ = uploadResp.Body.Close()
+
+	metaReq := newGCSAuthedRequest(t, ctx, http.MethodGet, server.URL, "/storage/v1/b/meta-bucket/o/meta.txt", "gcs-meta-token", nil)
+	metaResp, err := http.DefaultClient.Do(metaReq)
+	if err != nil {
+		t.Fatalf("metadata request error = %v", err)
+	}
+	defer metaResp.Body.Close()
+	var objectMeta struct {
+		ContentType        string            `json:"contentType"`
+		CacheControl       string            `json:"cacheControl"`
+		ContentDisposition string            `json:"contentDisposition"`
+		ContentEncoding    string            `json:"contentEncoding"`
+		ContentLanguage    string            `json:"contentLanguage"`
+		Metadata           map[string]string `json:"metadata"`
+	}
+	if err := json.NewDecoder(metaResp.Body).Decode(&objectMeta); err != nil {
+		t.Fatalf("Decode(metadata) error = %v", err)
+	}
+	if got, want := objectMeta.ContentType, "text/plain"; got != want {
+		t.Fatalf("content type = %q, want %q", got, want)
+	}
+	if got, want := objectMeta.Metadata["team"], "platform"; got != want {
+		t.Fatalf("metadata team = %q, want %q", got, want)
+	}
+
+	mediaReq := newGCSAuthedRequest(t, ctx, http.MethodGet, server.URL, "/storage/v1/b/meta-bucket/o/meta.txt?alt=media", "gcs-meta-token", nil)
+	mediaResp, err := http.DefaultClient.Do(mediaReq)
+	if err != nil {
+		t.Fatalf("media request error = %v", err)
+	}
+	defer mediaResp.Body.Close()
+	if got, want := mediaResp.Header.Get("Content-Type"), "text/plain"; got != want {
+		t.Fatalf("media content type = %q, want %q", got, want)
+	}
+	if got, want := mediaResp.Header.Get("x-goog-meta-team"), "platform"; got != want {
+		t.Fatalf("media custom metadata = %q, want %q", got, want)
+	}
+
+	rewriteReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/storage/v1/b/meta-bucket/o/meta.txt/rewriteTo/b/meta-bucket/o/meta-copy.txt", "gcs-meta-token", nil)
+	rewriteResp, err := http.DefaultClient.Do(rewriteReq)
+	if err != nil {
+		t.Fatalf("rewrite request error = %v", err)
+	}
+	_ = rewriteResp.Body.Close()
+
+	copyReq := newGCSAuthedRequest(t, ctx, http.MethodGet, server.URL, "/storage/v1/b/meta-bucket/o/meta-copy.txt", "gcs-meta-token", nil)
+	copyResp, err := http.DefaultClient.Do(copyReq)
+	if err != nil {
+		t.Fatalf("copy metadata request error = %v", err)
+	}
+	defer copyResp.Body.Close()
+	var copiedMeta struct {
+		ContentType string            `json:"contentType"`
+		Metadata    map[string]string `json:"metadata"`
+	}
+	if err := json.NewDecoder(copyResp.Body).Decode(&copiedMeta); err != nil {
+		t.Fatalf("Decode(copy metadata) error = %v", err)
+	}
+	if got, want := copiedMeta.ContentType, "text/plain"; got != want {
+		t.Fatalf("copy content type = %q, want %q", got, want)
+	}
+	if got, want := copiedMeta.Metadata["team"], "platform"; got != want {
+		t.Fatalf("copy metadata team = %q, want %q", got, want)
+	}
+}
+
+func TestGCSPhaseScaffolding(t *testing.T) {
 	t.Run("GenerationPreconditions", func(t *testing.T) {
 		t.Skip("Phase 4: generation and metageneration precondition coverage")
 	})

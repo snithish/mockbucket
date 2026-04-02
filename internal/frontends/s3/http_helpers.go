@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -276,6 +277,24 @@ func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {
 	if meta.ETag != "" {
 		w.Header().Set("ETag", "\""+meta.ETag+"\"")
 	}
+	if meta.ContentType != "" {
+		w.Header().Set("Content-Type", meta.ContentType)
+	}
+	if meta.CacheControl != "" {
+		w.Header().Set("Cache-Control", meta.CacheControl)
+	}
+	if meta.ContentDisposition != "" {
+		w.Header().Set("Content-Disposition", meta.ContentDisposition)
+	}
+	if meta.ContentEncoding != "" {
+		w.Header().Set("Content-Encoding", meta.ContentEncoding)
+	}
+	if meta.ContentLanguage != "" {
+		w.Header().Set("Content-Language", meta.ContentLanguage)
+	}
+	for key, value := range meta.CustomMetadata {
+		w.Header().Set("x-amz-meta-"+key, value)
+	}
 	if !meta.ModifiedAt.IsZero() {
 		w.Header().Set("Last-Modified", meta.ModifiedAt.UTC().Format(http.TimeFormat))
 	}
@@ -283,9 +302,77 @@ func setObjectHeaders(w http.ResponseWriter, meta core.ObjectMetadata) {
 
 func setObjectHeadersWithLength(w http.ResponseWriter, meta core.ObjectMetadata) {
 	setObjectHeaders(w, meta)
+	if meta.ContentType == "" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 	if meta.Size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	}
+}
+
+func objectMetadataFromRequest(r *http.Request) core.ObjectMetadata {
+	return core.ObjectMetadata{
+		ContentType:        strings.TrimSpace(r.Header.Get("Content-Type")),
+		CacheControl:       strings.TrimSpace(r.Header.Get("Cache-Control")),
+		ContentDisposition: strings.TrimSpace(r.Header.Get("Content-Disposition")),
+		ContentEncoding:    sanitizeS3ContentEncoding(r.Header.Values("Content-Encoding")),
+		ContentLanguage:    strings.TrimSpace(r.Header.Get("Content-Language")),
+		CustomMetadata:     extractPrefixedHeaders(r.Header, "x-amz-meta-"),
+	}
+}
+
+func copyObjectMetadata(src core.ObjectMetadata) core.ObjectMetadata {
+	return core.ObjectMetadata{
+		ContentType:        src.ContentType,
+		CacheControl:       src.CacheControl,
+		ContentDisposition: src.ContentDisposition,
+		ContentEncoding:    src.ContentEncoding,
+		ContentLanguage:    src.ContentLanguage,
+		CustomMetadata:     cloneCustomMetadata(src.CustomMetadata),
+	}
+}
+
+func sanitizeS3ContentEncoding(values []string) string {
+	var encodings []string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			encoding := strings.TrimSpace(part)
+			if encoding == "" || strings.EqualFold(encoding, "aws-chunked") {
+				continue
+			}
+			encodings = append(encodings, encoding)
+		}
+	}
+	if len(encodings) == 0 {
+		return ""
+	}
+	return strings.Join(slices.Compact(encodings), ", ")
+}
+
+func extractPrefixedHeaders(headers http.Header, prefix string) map[string]string {
+	var metadata map[string]string
+	for key, values := range headers {
+		lowerKey := strings.ToLower(key)
+		if !strings.HasPrefix(lowerKey, prefix) || len(values) == 0 {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		metadata[strings.TrimPrefix(lowerKey, prefix)] = values[0]
+	}
+	return metadata
+}
+
+func cloneCustomMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func writeXML(w http.ResponseWriter, status int, payload any) {

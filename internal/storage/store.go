@@ -244,6 +244,12 @@ func (s *SQLiteStore) initSchema() error {
 			path TEXT NOT NULL,
 			size INTEGER NOT NULL,
 			etag TEXT NOT NULL,
+			content_type TEXT NOT NULL DEFAULT '',
+			cache_control TEXT NOT NULL DEFAULT '',
+			content_disposition TEXT NOT NULL DEFAULT '',
+			content_encoding TEXT NOT NULL DEFAULT '',
+			content_language TEXT NOT NULL DEFAULT '',
+			custom_metadata_json TEXT NOT NULL DEFAULT '{}',
 			created_at TIMESTAMP NOT NULL,
 			modified_at TIMESTAMP NOT NULL,
 			PRIMARY KEY (bucket, key)
@@ -265,6 +271,12 @@ func (s *SQLiteStore) initSchema() error {
 			upload_id TEXT PRIMARY KEY,
 			bucket TEXT NOT NULL,
 			key TEXT NOT NULL,
+			content_type TEXT NOT NULL DEFAULT '',
+			cache_control TEXT NOT NULL DEFAULT '',
+			content_disposition TEXT NOT NULL DEFAULT '',
+			content_encoding TEXT NOT NULL DEFAULT '',
+			content_language TEXT NOT NULL DEFAULT '',
+			custom_metadata_json TEXT NOT NULL DEFAULT '{}',
 			created_at TIMESTAMP NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_multipart_uploads_bucket_key ON multipart_uploads(bucket, key);`,
@@ -288,6 +300,24 @@ func (s *SQLiteStore) initSchema() error {
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("init schema: %w", err)
+		}
+	}
+	for _, statement := range []string{
+		`ALTER TABLE objects ADD COLUMN content_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN cache_control TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_disposition TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_encoding TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN content_language TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN custom_metadata_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE multipart_uploads ADD COLUMN content_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE multipart_uploads ADD COLUMN cache_control TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE multipart_uploads ADD COLUMN content_disposition TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE multipart_uploads ADD COLUMN content_encoding TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE multipart_uploads ADD COLUMN content_language TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE multipart_uploads ADD COLUMN custom_metadata_json TEXT NOT NULL DEFAULT '{}'`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("migrate schema: %w", err)
 		}
 	}
 	return nil
@@ -340,8 +370,11 @@ func (s *SQLiteStore) PutObject(ctx context.Context, meta core.ObjectMetadata) e
 
 func (s *SQLiteStore) GetObject(ctx context.Context, bucket, key string) (core.ObjectMetadata, error) {
 	var meta core.ObjectMetadata
-	row := s.db.QueryRowContext(ctx, `SELECT bucket, key, path, size, etag, created_at, modified_at FROM objects WHERE bucket = ? AND key = ?`, bucket, key)
-	if err := row.Scan(&meta.Bucket, &meta.Key, &meta.Path, &meta.Size, &meta.ETag, &meta.CreatedAt, &meta.ModifiedAt); err != nil {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
+		FROM objects
+		WHERE bucket = ? AND key = ?`, bucket, key)
+	if err := scanObjectMetadata(row, &meta); err != nil {
 		if err == sql.ErrNoRows {
 			return core.ObjectMetadata{}, core.ErrNotFound
 		}
@@ -368,7 +401,7 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, bucket, prefix string, li
 	}
 	escapedPrefix := escapeLike(prefix)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT bucket, key, path, size, etag, created_at, modified_at
+		SELECT bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
 		FROM objects
 		WHERE bucket = ? AND key LIKE ? ESCAPE '!' AND key > ?
 		ORDER BY key
@@ -380,7 +413,7 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, bucket, prefix string, li
 	var objects []core.ObjectMetadata
 	for rows.Next() {
 		var meta core.ObjectMetadata
-		if err := rows.Scan(&meta.Bucket, &meta.Key, &meta.Path, &meta.Size, &meta.ETag, &meta.CreatedAt, &meta.ModifiedAt); err != nil {
+		if err := scanObjectMetadata(rows, &meta); err != nil {
 			return nil, err
 		}
 		objects = append(objects, meta)
@@ -464,10 +497,14 @@ func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context, now time.Time) 
 }
 
 func (s *SQLiteStore) CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO multipart_uploads(upload_id, bucket, key, created_at)
-		VALUES(?, ?, ?, ?)`,
-		upload.UploadID, upload.Bucket, upload.Key, upload.CreatedAt,
+	customMetadataJSON, err := json.Marshal(upload.CustomMetadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO multipart_uploads(upload_id, bucket, key, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		upload.UploadID, upload.Bucket, upload.Key, upload.ContentType, upload.CacheControl, upload.ContentDisposition, upload.ContentEncoding, upload.ContentLanguage, string(customMetadataJSON), upload.CreatedAt,
 	)
 	if isUniqueConstraint(err) {
 		return core.ErrConflict
@@ -477,14 +514,18 @@ func (s *SQLiteStore) CreateMultipartUpload(ctx context.Context, upload core.Mul
 
 func (s *SQLiteStore) GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error) {
 	var upload core.MultipartUpload
+	var customMetadataJSON string
 	row := s.db.QueryRowContext(ctx, `
-		SELECT upload_id, bucket, key, created_at
+		SELECT upload_id, bucket, key, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at
 		FROM multipart_uploads
 		WHERE upload_id = ?`, uploadID)
-	if err := row.Scan(&upload.UploadID, &upload.Bucket, &upload.Key, &upload.CreatedAt); err != nil {
+	if err := row.Scan(&upload.UploadID, &upload.Bucket, &upload.Key, &upload.ContentType, &upload.CacheControl, &upload.ContentDisposition, &upload.ContentEncoding, &upload.ContentLanguage, &customMetadataJSON, &upload.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return core.MultipartUpload{}, core.ErrNotFound
 		}
+		return core.MultipartUpload{}, err
+	}
+	if err := unmarshalCustomMetadata(customMetadataJSON, &upload.CustomMetadata); err != nil {
 		return core.MultipartUpload{}, err
 	}
 	return upload, nil
@@ -584,6 +625,10 @@ func isUniqueConstraint(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
 }
 
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
+}
+
 func escapeLike(input string) string {
 	replacer := strings.NewReplacer(
 		`!`, `!!`,
@@ -646,18 +691,71 @@ func deleteBucket(ctx context.Context, runner sqlRunner, name string) error {
 	return nil
 }
 
+type objectMetadataScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanObjectMetadata(scanner objectMetadataScanner, meta *core.ObjectMetadata) error {
+	var customMetadataJSON string
+	if err := scanner.Scan(
+		&meta.Bucket,
+		&meta.Key,
+		&meta.Path,
+		&meta.Size,
+		&meta.ETag,
+		&meta.ContentType,
+		&meta.CacheControl,
+		&meta.ContentDisposition,
+		&meta.ContentEncoding,
+		&meta.ContentLanguage,
+		&customMetadataJSON,
+		&meta.CreatedAt,
+		&meta.ModifiedAt,
+	); err != nil {
+		return err
+	}
+	return unmarshalCustomMetadata(customMetadataJSON, &meta.CustomMetadata)
+}
+
 func putObject(ctx context.Context, runner sqlRunner, meta core.ObjectMetadata) error {
-	_, err := runner.ExecContext(ctx, `
-		INSERT INTO objects(bucket, key, path, size, etag, created_at, modified_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
+	customMetadataJSON, err := json.Marshal(meta.CustomMetadata)
+	if err != nil {
+		return err
+	}
+	_, err = runner.ExecContext(ctx, `
+		INSERT INTO objects(bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bucket, key) DO UPDATE SET
 			path = excluded.path,
 			size = excluded.size,
 			etag = excluded.etag,
+			content_type = excluded.content_type,
+			cache_control = excluded.cache_control,
+			content_disposition = excluded.content_disposition,
+			content_encoding = excluded.content_encoding,
+			content_language = excluded.content_language,
+			custom_metadata_json = excluded.custom_metadata_json,
 			modified_at = excluded.modified_at`,
-		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, meta.CreatedAt, meta.ModifiedAt,
+		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, meta.ContentType, meta.CacheControl, meta.ContentDisposition, meta.ContentEncoding, meta.ContentLanguage, string(customMetadataJSON), meta.CreatedAt, meta.ModifiedAt,
 	)
 	return err
+}
+
+func unmarshalCustomMetadata(raw string, target *map[string]string) error {
+	if strings.TrimSpace(raw) == "" {
+		*target = nil
+		return nil
+	}
+	var customMetadata map[string]string
+	if err := json.Unmarshal([]byte(raw), &customMetadata); err != nil {
+		return fmt.Errorf("parse custom metadata: %w", err)
+	}
+	if len(customMetadata) == 0 {
+		*target = nil
+		return nil
+	}
+	*target = customMetadata
+	return nil
 }
 
 func upsertAccessKey(ctx context.Context, runner sqlRunner, key SeedAccessKey) error {

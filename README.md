@@ -43,9 +43,9 @@ MockBucket is designed for:
 
 It currently simulates:
 
-- S3 object-storage workflows, including copy, multipart upload, virtual-hosted-style addressing, and common presigned URL access
+- S3 object-storage workflows, including copy, multipart upload, virtual-hosted-style addressing, common presigned URL access, and persisted object metadata headers
 - STS `AssumeRole`, `GetCallerIdentity`, and `GetSessionToken` flows alongside S3
-- GCS object-storage workflows, including media, multipart, resumable upload, and rewrite
+- GCS object-storage workflows, including media, multipart, resumable upload, rewrite, and persisted object metadata fields
 
 Azure is not implemented in this repository yet. If you need Azure support,
 that is future work rather than a current feature.
@@ -382,7 +382,7 @@ not currently implement:
 - IAM policy APIs and policy binding evaluation
 - Durable generation and metageneration counters
 - Preconditions (`ifGenerationMatch`, `ifMetagenerationMatch`, and variants)
-- Rich object metadata parity (beyond the small metadata subset returned today)
+- Full ACL and encryption metadata parity
 
 ### Objects
 
