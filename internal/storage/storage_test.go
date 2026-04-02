@@ -110,6 +110,90 @@ func TestObjectMetadataRoundTripAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestObjectGenerationIncrementsOnOverwrite(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer metadata.Close()
+
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	if err := metadata.PutObject(ctx, core.ObjectMetadata{
+		Bucket:     "demo",
+		Key:        "versioned.txt",
+		Path:       "/tmp/versioned-v1.txt",
+		ETag:       "etag-v1",
+		Size:       2,
+		CreatedAt:  createdAt,
+		ModifiedAt: createdAt,
+	}); err != nil {
+		t.Fatalf("PutObject(v1) error = %v", err)
+	}
+	if err := metadata.PutObject(ctx, core.ObjectMetadata{
+		Bucket:     "demo",
+		Key:        "versioned.txt",
+		Path:       "/tmp/versioned-v2.txt",
+		ETag:       "etag-v2",
+		Size:       4,
+		CreatedAt:  time.Now().UTC(),
+		ModifiedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutObject(v2) error = %v", err)
+	}
+
+	stored, err := metadata.GetObject(ctx, "demo", "versioned.txt")
+	if err != nil {
+		t.Fatalf("GetObject() error = %v", err)
+	}
+	if got, want := stored.Generation, int64(2); got != want {
+		t.Fatalf("generation = %d, want %d", got, want)
+	}
+	if got, want := stored.Metageneration, int64(1); got != want {
+		t.Fatalf("metageneration = %d, want %d", got, want)
+	}
+	if got, want := stored.ETag, "etag-v2"; got != want {
+		t.Fatalf("etag = %q, want %q", got, want)
+	}
+}
+
+func TestApplySeedStateDoesNotRewriteUnchangedObjects(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	objects, err := NewFilesystemObjectStore(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
+	}
+	metadata, err := OpenSQLite(filepath.Join(dir, "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer metadata.Close()
+
+	state := SeedState{
+		Buckets: []string{"demo"},
+		Objects: []SeedObject{{Bucket: "demo", Key: "seed.txt", Content: "same-content"}},
+	}
+	if err := metadata.ApplySeedState(ctx, state, objects); err != nil {
+		t.Fatalf("ApplySeedState(first) error = %v", err)
+	}
+	first, err := metadata.GetObject(ctx, "demo", "seed.txt")
+	if err != nil {
+		t.Fatalf("GetObject(first) error = %v", err)
+	}
+
+	if err := metadata.ApplySeedState(ctx, state, objects); err != nil {
+		t.Fatalf("ApplySeedState(second) error = %v", err)
+	}
+	second, err := metadata.GetObject(ctx, "demo", "seed.txt")
+	if err != nil {
+		t.Fatalf("GetObject(second) error = %v", err)
+	}
+	if got, want := second.Generation, first.Generation; got != want {
+		t.Fatalf("generation after unchanged reseed = %d, want %d", got, want)
+	}
+}
+
 func TestSessionRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))

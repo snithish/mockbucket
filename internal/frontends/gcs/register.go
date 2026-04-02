@@ -244,6 +244,7 @@ type resumableUpload struct {
 	ContentEncoding    string
 	ContentLanguage    string
 	CustomMetadata     map[string]string
+	Preconditions      objectPreconditions
 
 	mu       sync.Mutex
 	received int64
@@ -295,6 +296,14 @@ func handleResumableUploadInit(w http.ResponseWriter, r *http.Request, deps comm
 	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !validateWriteObjectPreconditions(w, r, deps, bucket, key, preconditions) {
+		return
+	}
 	sessionID, err := newResumableUploadID()
 	if err != nil {
 		writeError(w, err)
@@ -321,6 +330,7 @@ func handleResumableUploadInit(w http.ResponseWriter, r *http.Request, deps comm
 		ContentEncoding:    strings.TrimSpace(payload.ContentEncoding),
 		ContentLanguage:    strings.TrimSpace(payload.ContentLanguage),
 		CustomMetadata:     cloneCustomMetadata(payload.Metadata),
+		Preconditions:      preconditions,
 	})
 	w.Header().Set("Location", resumableUploadLocation(r, sessionID))
 	w.WriteHeader(http.StatusOK)
@@ -337,6 +347,10 @@ func handleResumableUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		upload.mu.Lock()
 		defer upload.mu.Unlock()
 		if err := finalizeResumableUpload(r.Context(), deps, resumableUploads, sessionID, upload, w); err != nil {
+			if err == errConditionNotMet {
+				writePreconditionFailed(w)
+				return
+			}
 			writeError(w, err)
 		}
 		return
@@ -357,6 +371,10 @@ func handleResumableUpload(w http.ResponseWriter, r *http.Request, deps common.D
 	}
 	if !ok {
 		if err := finalizeUnboundedResumableUpload(r.Context(), deps, resumableUploads, sessionID, upload, r.Body, w); err != nil {
+			if err == errConditionNotMet {
+				writePreconditionFailed(w)
+				return
+			}
 			writeError(w, err)
 		}
 		return
@@ -371,6 +389,10 @@ func handleResumableUpload(w http.ResponseWriter, r *http.Request, deps common.D
 		return
 	}
 	if err := finalizeResumableUpload(r.Context(), deps, resumableUploads, sessionID, upload, w); err != nil {
+		if err == errConditionNotMet {
+			writePreconditionFailed(w)
+			return
+		}
 		writeError(w, err)
 	}
 }
@@ -387,7 +409,15 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	key = normalizeDirectoryMarkerKey(key, r.ContentLength)
+	if !validateWriteObjectPreconditions(w, r, deps, bucket, key, preconditions) {
+		return
+	}
 	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, r.Body)
 	if err != nil {
 		writeError(w, err)
@@ -397,6 +427,11 @@ func handleMediaUpload(w http.ResponseWriter, r *http.Request, deps common.Depen
 		ContentType: strings.TrimSpace(r.Header.Get("Content-Type")),
 	})
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err = deps.Metadata.GetObject(r.Context(), bucket, key)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -455,6 +490,14 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !validateWriteObjectPreconditions(w, r, deps, bucket, key, preconditions) {
+		return
+	}
 	meta, crc32c, err := putObjectWithCRC32C(r.Context(), deps, bucket, key, media)
 	if err != nil {
 		writeError(w, err)
@@ -465,6 +508,11 @@ func handleMultipartUpload(w http.ResponseWriter, r *http.Request, deps common.D
 	}
 	applyObjectMetadata(&meta, metadata)
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err = deps.Metadata.GetObject(r.Context(), bucket, key)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -485,6 +533,15 @@ func handleGetObject(w http.ResponseWriter, r *http.Request, deps common.Depende
 	}
 	meta, ok := loadObject(w, r, deps, bucket, key)
 	if !ok {
+		return
+	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := checkExistingObjectPreconditions(meta, preconditions); err != nil {
+		writePreconditionFailed(w)
 		return
 	}
 	if !forceMedia && r.URL.Query().Get("alt") != "media" {
@@ -512,6 +569,25 @@ func handleDeleteObject(w http.ResponseWriter, r *http.Request, deps common.Depe
 	if _, ok := loadBucket(w, r, deps, bucket); !ok {
 		return
 	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err := deps.Metadata.GetObject(r.Context(), bucket, key)
+	if err != nil {
+		if err == core.ErrNotFound && (preconditions.GenerationMatch != nil || preconditions.MetagenerationMatch != nil) {
+			writePreconditionFailed(w)
+			return
+		}
+		if err != core.ErrNotFound {
+			writeError(w, err)
+			return
+		}
+	} else if err := checkExistingObjectPreconditions(meta, preconditions); err != nil {
+		writePreconditionFailed(w)
+		return
+	}
 	if err := deleteObjectTree(r.Context(), deps, bucket, key); err != nil {
 		writeError(w, err)
 		return
@@ -527,6 +603,14 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		return
 	}
 	if _, ok := loadBucket(w, r, deps, dstBucket); !ok {
+		return
+	}
+	preconditions, err := parseObjectPreconditions(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !validateWriteObjectPreconditions(w, r, deps, dstBucket, dstKey, preconditions) {
 		return
 	}
 	srcMeta, ok := loadObject(w, r, deps, srcBucket, srcKey)
@@ -554,6 +638,11 @@ func handleRewriteObject(w http.ResponseWriter, r *http.Request, deps common.Dep
 		Metadata:           cloneCustomMetadata(srcMeta.CustomMetadata),
 	})
 	if err := common.CommitObject(r.Context(), deps, meta); err != nil {
+		writeError(w, err)
+		return
+	}
+	meta, err = deps.Metadata.GetObject(r.Context(), dstBucket, dstKey)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -685,6 +774,12 @@ func finalizeResumableUpload(
 	defer file.Close()
 
 	key := normalizeDirectoryMarkerKey(upload.Key, upload.received)
+	if err := validateWriteObjectPreconditionsNoRequest(ctx, deps, upload.Bucket, key, upload.Preconditions); err != nil {
+		if err == errConditionNotMet {
+			return errConditionNotMet
+		}
+		return err
+	}
 	meta, crc32c, err := putObjectWithCRC32C(ctx, deps, upload.Bucket, key, file)
 	if err != nil {
 		return err
@@ -700,6 +795,10 @@ func finalizeResumableUpload(
 	if err := common.CommitObject(ctx, deps, meta); err != nil {
 		return err
 	}
+	meta, err = deps.Metadata.GetObject(ctx, upload.Bucket, key)
+	if err != nil {
+		return err
+	}
 	resumableUploads.Delete(sessionID)
 	_ = os.Remove(upload.Path)
 	resp := newObjectResponse(meta, crc32c)
@@ -708,10 +807,7 @@ func finalizeResumableUpload(
 }
 
 func objectGeneration(meta core.ObjectMetadata) string {
-	generation := meta.ModifiedAt.UTC().UnixMicro()
-	if generation <= 0 {
-		generation = meta.CreatedAt.UTC().UnixMicro()
-	}
+	generation := meta.Generation
 	if generation <= 0 {
 		generation = 1
 	}
@@ -817,4 +913,27 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func validateWriteObjectPreconditions(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string, preconditions objectPreconditions) bool {
+	if err := validateWriteObjectPreconditionsNoRequest(r.Context(), deps, bucket, key, preconditions); err != nil {
+		if err == errConditionNotMet {
+			writePreconditionFailed(w)
+			return false
+		}
+		writeError(w, err)
+		return false
+	}
+	return true
+}
+
+func validateWriteObjectPreconditionsNoRequest(ctx context.Context, deps common.Dependencies, bucket, key string, preconditions objectPreconditions) error {
+	current, err := deps.Metadata.GetObject(ctx, bucket, key)
+	if err != nil {
+		if err == core.ErrNotFound {
+			return checkWriteObjectPreconditions(nil, preconditions)
+		}
+		return err
+	}
+	return checkWriteObjectPreconditions(&current, preconditions)
 }

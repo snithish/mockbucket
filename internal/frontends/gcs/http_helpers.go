@@ -3,6 +3,7 @@ package gcs
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -51,6 +52,13 @@ type listObjectsResponse struct {
 	Items         []objectResponse `json:"items,omitempty"`
 	Prefixes      []string         `json:"prefixes,omitempty"`
 	NextPageToken string           `json:"nextPageToken,omitempty"`
+}
+
+var errConditionNotMet = errors.New("condition not met")
+
+type objectPreconditions struct {
+	GenerationMatch     *int64
+	MetagenerationMatch *int64
 }
 
 func parseMaxResults(raw string) int {
@@ -162,6 +170,22 @@ func writeError(w http.ResponseWriter, err error) {
 	})
 }
 
+func writePreconditionFailed(w http.ResponseWriter) {
+	writeJSON(w, http.StatusPreconditionFailed, map[string]any{
+		"error": map[string]any{
+			"code":    http.StatusPreconditionFailed,
+			"message": "At least one of the pre-conditions you specified did not hold.",
+			"errors": []map[string]any{
+				{
+					"message": "At least one of the pre-conditions you specified did not hold.",
+					"domain":  "global",
+					"reason":  "conditionNotMet",
+				},
+			},
+		},
+	})
+}
+
 func rewriteRequest(r *http.Request, rawObject string) (string, string, string, bool) {
 	if r.Method != http.MethodPost {
 		return "", "", "", false
@@ -182,6 +206,56 @@ func rewriteRequest(r *http.Request, rawObject string) (string, string, string, 
 	return srcKey, dstBucket, dstKey, true
 }
 
+func parseObjectPreconditions(r *http.Request) (objectPreconditions, error) {
+	preconditions := objectPreconditions{}
+	ifGenerationMatch, err := parseOptionalInt64(r.URL.Query().Get("ifGenerationMatch"))
+	if err != nil {
+		return objectPreconditions{}, err
+	}
+	ifMetagenerationMatch, err := parseOptionalInt64(r.URL.Query().Get("ifMetagenerationMatch"))
+	if err != nil {
+		return objectPreconditions{}, err
+	}
+	preconditions.GenerationMatch = ifGenerationMatch
+	preconditions.MetagenerationMatch = ifMetagenerationMatch
+	return preconditions, nil
+}
+
+func parseOptionalInt64(raw string) (*int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return nil, core.ErrInvalidArgument
+	}
+	return &value, nil
+}
+
+func checkExistingObjectPreconditions(meta core.ObjectMetadata, preconditions objectPreconditions) error {
+	if preconditions.GenerationMatch != nil && meta.Generation != *preconditions.GenerationMatch {
+		return errConditionNotMet
+	}
+	if preconditions.MetagenerationMatch != nil && meta.Metageneration != *preconditions.MetagenerationMatch {
+		return errConditionNotMet
+	}
+	return nil
+}
+
+func checkWriteObjectPreconditions(current *core.ObjectMetadata, preconditions objectPreconditions) error {
+	if current == nil {
+		if preconditions.GenerationMatch != nil && *preconditions.GenerationMatch == 0 && preconditions.MetagenerationMatch == nil {
+			return nil
+		}
+		if preconditions.GenerationMatch != nil || preconditions.MetagenerationMatch != nil {
+			return errConditionNotMet
+		}
+		return nil
+	}
+	return checkExistingObjectPreconditions(*current, preconditions)
+}
+
 func newObjectResponse(meta core.ObjectMetadata, crc32c string) objectResponse {
 	generation := objectGeneration(meta)
 	return objectResponse{
@@ -193,7 +267,7 @@ func newObjectResponse(meta core.ObjectMetadata, crc32c string) objectResponse {
 		CRC32C:             crc32c,
 		ETag:               strings.Trim(meta.ETag, "\""),
 		Generation:         generation,
-		Metageneration:     "1",
+		Metageneration:     objectMetageneration(meta),
 		TimeCreated:        meta.CreatedAt.UTC().Format(time.RFC3339),
 		Updated:            meta.ModifiedAt.UTC().Format(time.RFC3339),
 		ContentType:        meta.ContentType,
@@ -239,6 +313,13 @@ func cloneCustomMetadata(metadata map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func objectMetageneration(meta core.ObjectMetadata) string {
+	if meta.Metageneration > 0 {
+		return strconv.FormatInt(meta.Metageneration, 10)
+	}
+	return "1"
 }
 
 func newBucketResponse(name string, createdAt time.Time) bucketResponse {

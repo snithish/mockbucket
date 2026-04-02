@@ -104,6 +104,10 @@ func openObjectForRead(w http.ResponseWriter, r *http.Request, deps common.Depen
 		writeError(w, err)
 		return core.ObjectMetadata{}, nil, false
 	}
+	if !evaluateConditionalRead(w, r, meta) {
+		_ = reader.Close()
+		return core.ObjectMetadata{}, nil, false
+	}
 	return meta, reader, true
 }
 
@@ -308,6 +312,96 @@ func setObjectHeadersWithLength(w http.ResponseWriter, meta core.ObjectMetadata)
 	if meta.Size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	}
+}
+
+func evaluateConditionalRead(w http.ResponseWriter, r *http.Request, meta core.ObjectMetadata) bool {
+	if !matchesIfMatch(r.Header.Values("If-Match"), meta.ETag) {
+		writeS3Error(w, http.StatusPreconditionFailed, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold.")
+		return false
+	}
+	if !matchesIfUnmodifiedSince(r.Header.Get("If-Unmodified-Since"), meta.ModifiedAt) {
+		writeS3Error(w, http.StatusPreconditionFailed, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold.")
+		return false
+	}
+	if matchesIfNoneMatch(r.Header.Values("If-None-Match"), meta.ETag) {
+		w.WriteHeader(http.StatusNotModified)
+		return false
+	}
+	if !matchesIfModifiedSince(r.Header.Get("If-Modified-Since"), meta.ModifiedAt) {
+		w.WriteHeader(http.StatusNotModified)
+		return false
+	}
+	return true
+}
+
+func matchesIfMatch(values []string, etag string) bool {
+	tags := parseETagConditions(values)
+	if len(tags) == 0 {
+		return true
+	}
+	for _, tag := range tags {
+		if tag == "*" || tag == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesIfNoneMatch(values []string, etag string) bool {
+	tags := parseETagConditions(values)
+	if len(tags) == 0 {
+		return false
+	}
+	for _, tag := range tags {
+		if tag == "*" || tag == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesIfModifiedSince(raw string, modifiedAt time.Time) bool {
+	since, ok := parseHTTPTime(raw)
+	if !ok {
+		return true
+	}
+	return modifiedAt.After(since)
+}
+
+func matchesIfUnmodifiedSince(raw string, modifiedAt time.Time) bool {
+	since, ok := parseHTTPTime(raw)
+	if !ok {
+		return true
+	}
+	return !modifiedAt.After(since)
+}
+
+func parseETagConditions(values []string) []string {
+	var tags []string
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			tag := strings.TrimSpace(part)
+			tag = strings.TrimPrefix(tag, "W/")
+			tag = strings.Trim(tag, `"`)
+			if tag == "" {
+				continue
+			}
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+func parseHTTPTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	parsed, err := http.ParseTime(raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 func objectMetadataFromRequest(r *http.Request) core.ObjectMetadata {

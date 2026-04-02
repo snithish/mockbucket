@@ -8,6 +8,8 @@ type ObjectMetadata struct {
 	Path               string
 	ETag               string
 	Size               int64
+	Generation         int64
+	Metageneration     int64
 	ContentType        string
 	CacheControl       string
 	ContentDisposition string

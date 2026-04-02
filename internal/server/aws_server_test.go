@@ -346,7 +346,96 @@ func TestS3MetadataRoundTripAndCopyPreservation(t *testing.T) {
 
 func TestAWSPhaseScaffolding(t *testing.T) {
 	t.Run("ConditionalHeaders", func(t *testing.T) {
-		t.Skip("Phase 4: conditional request coverage")
+		runtime := newAWSTestRuntime(t)
+		s3Client := newS3Client(t, runtime, "admin", "admin-secret", "")
+		presignClient := newS3PresignClient(t, runtime, "admin", "admin-secret", "", true)
+		ctx := context.Background()
+
+		putOut, err := s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String("demo"),
+			Key:    aws.String("conditional.txt"),
+			Body:   strings.NewReader("conditional-body"),
+		})
+		if err != nil {
+			t.Fatalf("PutObject() error = %v", err)
+		}
+		headOut, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String("demo"),
+			Key:    aws.String("conditional.txt"),
+		})
+		if err != nil {
+			t.Fatalf("HeadObject() error = %v", err)
+		}
+
+		getURL, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String("demo"),
+			Key:    aws.String("conditional.txt"),
+		}, s3.WithPresignExpires(5*time.Minute))
+		if err != nil {
+			t.Fatalf("PresignGetObject() error = %v", err)
+		}
+		headURL, err := presignClient.PresignHeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: aws.String("demo"),
+			Key:    aws.String("conditional.txt"),
+		}, s3.WithPresignExpires(5*time.Minute))
+		if err != nil {
+			t.Fatalf("PresignHeadObject() error = %v", err)
+		}
+
+		matchReq := mustHTTPRequest(t, ctx, http.MethodGet, getURL.URL, nil)
+		matchReq.Header.Set("If-Match", aws.ToString(putOut.ETag))
+		matchResp, err := http.DefaultClient.Do(matchReq)
+		if err != nil {
+			t.Fatalf("GET If-Match request error = %v", err)
+		}
+		_ = matchResp.Body.Close()
+		if got, want := matchResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("GET If-Match status = %d, want %d", got, want)
+		}
+
+		failedMatchReq := mustHTTPRequest(t, ctx, http.MethodGet, getURL.URL, nil)
+		failedMatchReq.Header.Set("If-Match", "\"wrong-etag\"")
+		failedMatchResp, err := http.DefaultClient.Do(failedMatchReq)
+		if err != nil {
+			t.Fatalf("GET failed If-Match request error = %v", err)
+		}
+		_ = failedMatchResp.Body.Close()
+		if got, want := failedMatchResp.StatusCode, http.StatusPreconditionFailed; got != want {
+			t.Fatalf("GET failed If-Match status = %d, want %d", got, want)
+		}
+
+		noneMatchReq := mustHTTPRequest(t, ctx, http.MethodGet, getURL.URL, nil)
+		noneMatchReq.Header.Set("If-None-Match", aws.ToString(putOut.ETag))
+		noneMatchResp, err := http.DefaultClient.Do(noneMatchReq)
+		if err != nil {
+			t.Fatalf("GET If-None-Match request error = %v", err)
+		}
+		_ = noneMatchResp.Body.Close()
+		if got, want := noneMatchResp.StatusCode, http.StatusNotModified; got != want {
+			t.Fatalf("GET If-None-Match status = %d, want %d", got, want)
+		}
+
+		modifiedSinceReq := mustHTTPRequest(t, ctx, http.MethodHead, headURL.URL, nil)
+		modifiedSinceReq.Header.Set("If-Modified-Since", headOut.LastModified.UTC().Add(time.Hour).Format(http.TimeFormat))
+		modifiedSinceResp, err := http.DefaultClient.Do(modifiedSinceReq)
+		if err != nil {
+			t.Fatalf("HEAD If-Modified-Since request error = %v", err)
+		}
+		_ = modifiedSinceResp.Body.Close()
+		if got, want := modifiedSinceResp.StatusCode, http.StatusNotModified; got != want {
+			t.Fatalf("HEAD If-Modified-Since status = %d, want %d", got, want)
+		}
+
+		unmodifiedSinceReq := mustHTTPRequest(t, ctx, http.MethodHead, headURL.URL, nil)
+		unmodifiedSinceReq.Header.Set("If-Unmodified-Since", headOut.LastModified.UTC().Add(-time.Hour).Format(http.TimeFormat))
+		unmodifiedSinceResp, err := http.DefaultClient.Do(unmodifiedSinceReq)
+		if err != nil {
+			t.Fatalf("HEAD If-Unmodified-Since request error = %v", err)
+		}
+		_ = unmodifiedSinceResp.Body.Close()
+		if got, want := unmodifiedSinceResp.StatusCode, http.StatusPreconditionFailed; got != want {
+			t.Fatalf("HEAD If-Unmodified-Since status = %d, want %d", got, want)
+		}
 	})
 }
 

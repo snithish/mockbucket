@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -213,6 +214,13 @@ func (s *SQLiteStore) ApplySeedState(ctx context.Context, state SeedState, objec
 			}
 		}
 		for _, object := range state.Objects {
+			same, err := seededObjectMatches(ctx, tx, objects, object)
+			if err != nil {
+				return err
+			}
+			if same {
+				continue
+			}
 			meta, err := objects.PutObject(ctx, object.Bucket, object.Key, strings.NewReader(object.Content))
 			if err != nil {
 				return err
@@ -244,6 +252,8 @@ func (s *SQLiteStore) initSchema() error {
 			path TEXT NOT NULL,
 			size INTEGER NOT NULL,
 			etag TEXT NOT NULL,
+			generation INTEGER NOT NULL DEFAULT 1,
+			metageneration INTEGER NOT NULL DEFAULT 1,
 			content_type TEXT NOT NULL DEFAULT '',
 			cache_control TEXT NOT NULL DEFAULT '',
 			content_disposition TEXT NOT NULL DEFAULT '',
@@ -304,6 +314,8 @@ func (s *SQLiteStore) initSchema() error {
 	}
 	for _, statement := range []string{
 		`ALTER TABLE objects ADD COLUMN content_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE objects ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE objects ADD COLUMN metageneration INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE objects ADD COLUMN cache_control TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE objects ADD COLUMN content_disposition TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE objects ADD COLUMN content_encoding TEXT NOT NULL DEFAULT ''`,
@@ -369,18 +381,7 @@ func (s *SQLiteStore) PutObject(ctx context.Context, meta core.ObjectMetadata) e
 }
 
 func (s *SQLiteStore) GetObject(ctx context.Context, bucket, key string) (core.ObjectMetadata, error) {
-	var meta core.ObjectMetadata
-	row := s.db.QueryRowContext(ctx, `
-		SELECT bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
-		FROM objects
-		WHERE bucket = ? AND key = ?`, bucket, key)
-	if err := scanObjectMetadata(row, &meta); err != nil {
-		if err == sql.ErrNoRows {
-			return core.ObjectMetadata{}, core.ErrNotFound
-		}
-		return core.ObjectMetadata{}, err
-	}
-	return meta, nil
+	return getObject(ctx, s.db, bucket, key)
 }
 
 func (s *SQLiteStore) DeleteObject(ctx context.Context, bucket, key string) error {
@@ -401,7 +402,7 @@ func (s *SQLiteStore) ListObjects(ctx context.Context, bucket, prefix string, li
 	}
 	escapedPrefix := escapeLike(prefix)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
+		SELECT bucket, key, path, size, etag, generation, metageneration, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
 		FROM objects
 		WHERE bucket = ? AND key LIKE ? ESCAPE '!' AND key > ?
 		ORDER BY key
@@ -643,6 +644,21 @@ func ensureBucket(ctx context.Context, runner sqlRunner, name string) error {
 	return err
 }
 
+func getObject(ctx context.Context, runner sqlRunner, bucket, key string) (core.ObjectMetadata, error) {
+	var meta core.ObjectMetadata
+	row := runner.QueryRowContext(ctx, `
+		SELECT bucket, key, path, size, etag, generation, metageneration, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at
+		FROM objects
+		WHERE bucket = ? AND key = ?`, bucket, key)
+	if err := scanObjectMetadata(row, &meta); err != nil {
+		if err == sql.ErrNoRows {
+			return core.ObjectMetadata{}, core.ErrNotFound
+		}
+		return core.ObjectMetadata{}, err
+	}
+	return meta, nil
+}
+
 func createBucket(ctx context.Context, runner sqlRunner, name string) error {
 	res, err := runner.ExecContext(ctx, `INSERT INTO buckets(name, created_at) VALUES(?, ?) ON CONFLICT(name) DO NOTHING`, name, time.Now().UTC())
 	if err != nil {
@@ -703,6 +719,8 @@ func scanObjectMetadata(scanner objectMetadataScanner, meta *core.ObjectMetadata
 		&meta.Path,
 		&meta.Size,
 		&meta.ETag,
+		&meta.Generation,
+		&meta.Metageneration,
 		&meta.ContentType,
 		&meta.CacheControl,
 		&meta.ContentDisposition,
@@ -722,13 +740,23 @@ func putObject(ctx context.Context, runner sqlRunner, meta core.ObjectMetadata) 
 	if err != nil {
 		return err
 	}
+	initialGeneration := meta.Generation
+	if initialGeneration <= 0 {
+		initialGeneration = 1
+	}
+	initialMetageneration := meta.Metageneration
+	if initialMetageneration <= 0 {
+		initialMetageneration = 1
+	}
 	_, err = runner.ExecContext(ctx, `
-		INSERT INTO objects(bucket, key, path, size, etag, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO objects(bucket, key, path, size, etag, generation, metageneration, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at, modified_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bucket, key) DO UPDATE SET
 			path = excluded.path,
 			size = excluded.size,
 			etag = excluded.etag,
+			generation = CASE WHEN ? > 0 THEN ? ELSE objects.generation + 1 END,
+			metageneration = CASE WHEN ? > 0 THEN ? ELSE 1 END,
 			content_type = excluded.content_type,
 			cache_control = excluded.cache_control,
 			content_disposition = excluded.content_disposition,
@@ -736,9 +764,33 @@ func putObject(ctx context.Context, runner sqlRunner, meta core.ObjectMetadata) 
 			content_language = excluded.content_language,
 			custom_metadata_json = excluded.custom_metadata_json,
 			modified_at = excluded.modified_at`,
-		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, meta.ContentType, meta.CacheControl, meta.ContentDisposition, meta.ContentEncoding, meta.ContentLanguage, string(customMetadataJSON), meta.CreatedAt, meta.ModifiedAt,
+		meta.Bucket, meta.Key, meta.Path, meta.Size, meta.ETag, initialGeneration, initialMetageneration, meta.ContentType, meta.CacheControl, meta.ContentDisposition, meta.ContentEncoding, meta.ContentLanguage, string(customMetadataJSON), meta.CreatedAt, meta.ModifiedAt,
+		meta.Generation, initialGeneration, meta.Metageneration, initialMetageneration,
 	)
 	return err
+}
+
+func seededObjectMatches(ctx context.Context, runner sqlRunner, objects ObjectStore, seedObject SeedObject) (bool, error) {
+	_, err := getObject(ctx, runner, seedObject.Bucket, seedObject.Key)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	reader, _, err := objects.OpenObject(ctx, seedObject.Bucket, seedObject.Key)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer reader.Close()
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return false, err
+	}
+	return string(content) == seedObject.Content, nil
 }
 
 func unmarshalCustomMetadata(raw string, target *map[string]string) error {

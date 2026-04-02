@@ -423,7 +423,106 @@ func TestGCSMetadataRoundTripAndRewritePreservation(t *testing.T) {
 
 func TestGCSPhaseScaffolding(t *testing.T) {
 	t.Run("GenerationPreconditions", func(t *testing.T) {
-		t.Skip("Phase 4: generation and metageneration precondition coverage")
+		ctx := context.Background()
+		_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+			seedGCSServiceAccount(t, runtime, "phase4@mock.iam.gserviceaccount.com", "phase4-user", "gcs-phase4-token")
+		})
+
+		createBucketReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/storage/v1/b", "gcs-phase4-token", strings.NewReader(`{"name":"phase4-bucket"}`))
+		createBucketResp, err := http.DefaultClient.Do(createBucketReq)
+		if err != nil {
+			t.Fatalf("create bucket request error = %v", err)
+		}
+		_ = createBucketResp.Body.Close()
+		if got, want := createBucketResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("create bucket status = %d, want %d", got, want)
+		}
+
+		firstUploadReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/upload/storage/v1/b/phase4-bucket/o?uploadType=media&name=versioned.txt&ifGenerationMatch=0", "gcs-phase4-token", strings.NewReader("v1"))
+		firstUploadResp, err := http.DefaultClient.Do(firstUploadReq)
+		if err != nil {
+			t.Fatalf("first upload request error = %v", err)
+		}
+		defer firstUploadResp.Body.Close()
+		if got, want := firstUploadResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("first upload status = %d, want %d", got, want)
+		}
+		var firstObject struct {
+			Generation     string `json:"generation"`
+			Metageneration string `json:"metageneration"`
+		}
+		if err := json.NewDecoder(firstUploadResp.Body).Decode(&firstObject); err != nil {
+			t.Fatalf("Decode(first upload) error = %v", err)
+		}
+		if firstObject.Generation == "" || firstObject.Generation == "0" {
+			t.Fatalf("first generation = %q, want non-zero", firstObject.Generation)
+		}
+		if got, want := firstObject.Metageneration, "1"; got != want {
+			t.Fatalf("first metageneration = %q, want %q", got, want)
+		}
+
+		getReq := newGCSAuthedRequest(t, ctx, http.MethodGet, server.URL, "/storage/v1/b/phase4-bucket/o/versioned.txt?ifGenerationMatch="+url.QueryEscape(firstObject.Generation)+"&ifMetagenerationMatch=1", "gcs-phase4-token", nil)
+		getResp, err := http.DefaultClient.Do(getReq)
+		if err != nil {
+			t.Fatalf("get with matching preconditions error = %v", err)
+		}
+		_ = getResp.Body.Close()
+		if got, want := getResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("get with matching preconditions status = %d, want %d", got, want)
+		}
+
+		failedGetReq := newGCSAuthedRequest(t, ctx, http.MethodGet, server.URL, "/storage/v1/b/phase4-bucket/o/versioned.txt?ifGenerationMatch=999", "gcs-phase4-token", nil)
+		failedGetResp, err := http.DefaultClient.Do(failedGetReq)
+		if err != nil {
+			t.Fatalf("get with stale precondition error = %v", err)
+		}
+		_ = failedGetResp.Body.Close()
+		if got, want := failedGetResp.StatusCode, http.StatusPreconditionFailed; got != want {
+			t.Fatalf("get with stale precondition status = %d, want %d", got, want)
+		}
+
+		secondUploadReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/upload/storage/v1/b/phase4-bucket/o?uploadType=media&name=versioned.txt&ifGenerationMatch="+url.QueryEscape(firstObject.Generation), "gcs-phase4-token", strings.NewReader("v2"))
+		secondUploadResp, err := http.DefaultClient.Do(secondUploadReq)
+		if err != nil {
+			t.Fatalf("second upload request error = %v", err)
+		}
+		defer secondUploadResp.Body.Close()
+		if got, want := secondUploadResp.StatusCode, http.StatusOK; got != want {
+			t.Fatalf("second upload status = %d, want %d", got, want)
+		}
+		var secondObject struct {
+			Generation     string `json:"generation"`
+			Metageneration string `json:"metageneration"`
+		}
+		if err := json.NewDecoder(secondUploadResp.Body).Decode(&secondObject); err != nil {
+			t.Fatalf("Decode(second upload) error = %v", err)
+		}
+		if got, want := secondObject.Metageneration, "1"; got != want {
+			t.Fatalf("second metageneration = %q, want %q", got, want)
+		}
+		if secondObject.Generation == firstObject.Generation {
+			t.Fatalf("generation after overwrite = %q, want different from %q", secondObject.Generation, firstObject.Generation)
+		}
+
+		staleUploadReq := newGCSAuthedRequest(t, ctx, http.MethodPost, server.URL, "/upload/storage/v1/b/phase4-bucket/o?uploadType=media&name=versioned.txt&ifGenerationMatch="+url.QueryEscape(firstObject.Generation), "gcs-phase4-token", strings.NewReader("v3"))
+		staleUploadResp, err := http.DefaultClient.Do(staleUploadReq)
+		if err != nil {
+			t.Fatalf("stale upload request error = %v", err)
+		}
+		_ = staleUploadResp.Body.Close()
+		if got, want := staleUploadResp.StatusCode, http.StatusPreconditionFailed; got != want {
+			t.Fatalf("stale upload status = %d, want %d", got, want)
+		}
+
+		deleteReq := newGCSAuthedRequest(t, ctx, http.MethodDelete, server.URL, "/storage/v1/b/phase4-bucket/o/versioned.txt?ifGenerationMatch="+url.QueryEscape(secondObject.Generation)+"&ifMetagenerationMatch=1", "gcs-phase4-token", nil)
+		deleteResp, err := http.DefaultClient.Do(deleteReq)
+		if err != nil {
+			t.Fatalf("delete request error = %v", err)
+		}
+		_ = deleteResp.Body.Close()
+		if got, want := deleteResp.StatusCode, http.StatusNoContent; got != want {
+			t.Fatalf("delete status = %d, want %d", got, want)
+		}
 	})
 	t.Run("Compose", func(t *testing.T) {
 		t.Skip("Phase 5: compose coverage")

@@ -85,18 +85,55 @@ class GCSCompatSuite(CompatSuite):
         return 0
 
     def _test_objects(self) -> int:
+        from google.api_core.exceptions import PreconditionFailed
+
         client, blob = self._make_blob("compat-demo", "compat/gcs-sdk-test.txt")
         bucket = client.bucket("compat-demo")
-        blob.upload_from_string(b"gcs-sdk-compat-content")
+        blob.upload_from_string(b"gcs-sdk-compat-content", if_generation_match=0)
 
         blob = bucket.get_blob("compat/gcs-sdk-test.txt")
         if blob is None:
             fail("gcs upload - blob not found after upload")
             return 1
+        if blob.generation is None or blob.metageneration is None:
+            fail(f"gcs upload - generation={blob.generation} metageneration={blob.metageneration}")
+            return 1
+
+        first_generation = blob.generation
+        first_metageneration = blob.metageneration
+
+        matched = bucket.get_blob(
+            "compat/gcs-sdk-test.txt",
+            if_generation_match=first_generation,
+            if_metageneration_match=first_metageneration,
+        )
+        if matched is None:
+            fail("gcs get_object - matching generation preconditions returned no blob")
+            return 1
 
         content = blob.download_as_bytes()
         if content != b"gcs-sdk-compat-content":
             fail(f"gcs get_object - content={content!r}")
+            return 1
+
+        blob.upload_from_string(b"gcs-sdk-compat-content-v2", if_generation_match=first_generation)
+        blob.reload()
+        if blob.generation == first_generation:
+            fail(f"gcs overwrite - generation={blob.generation}, want increment from {first_generation}")
+            return 1
+        if blob.metageneration != 1:
+            fail(f"gcs overwrite - metageneration={blob.metageneration}, want 1")
+            return 1
+
+        try:
+            bucket.blob("compat/gcs-sdk-test.txt").upload_from_string(
+                b"stale-write",
+                if_generation_match=first_generation,
+            )
+        except PreconditionFailed:
+            pass
+        else:
+            fail("gcs overwrite - stale if_generation_match unexpectedly succeeded")
             return 1
 
         blobs = list(client.list_blobs("compat-demo", prefix="compat/"))

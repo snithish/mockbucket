@@ -374,14 +374,16 @@ gcs:
 `GET /api/v1/gcs/service-account` returns generated JSON credentials and the
 same seeded `principal` used for runtime token resolution.
 
+GCS object resources now expose durable `generation` and `metageneration`
+counters, and object reads and writes honor `ifGenerationMatch` and
+`ifMetagenerationMatch`.
+
 ### GCS Unsupported Features
 
 The GCS frontend intentionally excludes several cloud features. MockBucket does
 not currently implement:
 
 - IAM policy APIs and policy binding evaluation
-- Durable generation and metageneration counters
-- Preconditions (`ifGenerationMatch`, `ifMetagenerationMatch`, and variants)
 - Full ACL and encryption metadata parity
 
 ### Objects
