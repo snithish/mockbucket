@@ -67,6 +67,46 @@ type completeMultipartUploadResult struct {
 	ETag     string   `xml:"ETag"`
 }
 
+type listMultipartUploadsResult struct {
+	XMLName        xml.Name          `xml:"ListMultipartUploadsResult"`
+	Xmlns          string            `xml:"xmlns,attr"`
+	Bucket         string            `xml:"Bucket"`
+	KeyMarker      string            `xml:"KeyMarker,omitempty"`
+	UploadIDMarker string            `xml:"UploadIdMarker,omitempty"`
+	NextKeyMarker  string            `xml:"NextKeyMarker,omitempty"`
+	NextUploadID   string            `xml:"NextUploadIdMarker,omitempty"`
+	MaxUploads     int               `xml:"MaxUploads"`
+	IsTruncated    bool              `xml:"IsTruncated"`
+	Prefix         string            `xml:"Prefix,omitempty"`
+	Uploads        []multipartUpload `xml:"Upload,omitempty"`
+}
+
+type multipartUpload struct {
+	Key       string `xml:"Key"`
+	UploadID  string `xml:"UploadId"`
+	Initiated string `xml:"Initiated"`
+}
+
+type listPartsResult struct {
+	XMLName              xml.Name        `xml:"ListPartsResult"`
+	Xmlns                string          `xml:"xmlns,attr"`
+	Bucket               string          `xml:"Bucket"`
+	Key                  string          `xml:"Key"`
+	UploadID             string          `xml:"UploadId"`
+	PartNumberMarker     int             `xml:"PartNumberMarker"`
+	NextPartNumberMarker int             `xml:"NextPartNumberMarker"`
+	MaxParts             int             `xml:"MaxParts"`
+	IsTruncated          bool            `xml:"IsTruncated"`
+	Parts                []multipartPart `xml:"Part,omitempty"`
+}
+
+type multipartPart struct {
+	PartNumber   int    `xml:"PartNumber"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+}
+
 func AddressingStyleMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bucket, ok := bucketFromVirtualHost(r.Host)
@@ -262,6 +302,48 @@ func hasDeleteQuery(r *http.Request) bool {
 
 func hasUploadIDQuery(r *http.Request) bool {
 	return r.URL.Query().Get("uploadId") != ""
+}
+
+func parseMaxUploads(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("max-uploads")
+	if raw == "" {
+		return 1000, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	if value > 1000 {
+		value = 1000
+	}
+	return value, nil
+}
+
+func parseMaxParts(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("max-parts")
+	if raw == "" {
+		return 1000, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	if value > 1000 {
+		value = 1000
+	}
+	return value, nil
+}
+
+func parsePartNumberMarker(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("part-number-marker")
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, core.ErrInvalidArgument
+	}
+	return value, nil
 }
 
 func parseCopySource(raw string) (string, string, error) {

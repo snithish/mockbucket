@@ -331,6 +331,45 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	_ = objects.AbortMultipartUpload(ctx, upload.UploadID)
 }
 
+func TestListMultipartUploadsUsesPrefixAndMarker(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer metadata.Close()
+
+	now := time.Now().UTC()
+	for _, upload := range []core.MultipartUpload{
+		{UploadID: "upload-a", Bucket: "demo", Key: "logs/a.txt", CreatedAt: now},
+		{UploadID: "upload-b", Bucket: "demo", Key: "logs/b.txt", CreatedAt: now.Add(time.Second)},
+		{UploadID: "upload-c", Bucket: "demo", Key: "tmp/c.txt", CreatedAt: now.Add(2 * time.Second)},
+	} {
+		if err := metadata.CreateMultipartUpload(ctx, upload); err != nil {
+			t.Fatalf("CreateMultipartUpload(%s) error = %v", upload.UploadID, err)
+		}
+	}
+
+	uploads, err := metadata.ListMultipartUploads(ctx, "demo", "logs/", "", "", 10)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads(prefix) error = %v", err)
+	}
+	if got, want := len(uploads), 2; got != want {
+		t.Fatalf("len(ListMultipartUploads(prefix)) = %d, want %d", got, want)
+	}
+
+	after, err := metadata.ListMultipartUploads(ctx, "demo", "logs/", "logs/a.txt", "upload-a", 10)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads(marker) error = %v", err)
+	}
+	if got, want := len(after), 1; got != want {
+		t.Fatalf("len(ListMultipartUploads(marker)) = %d, want %d", got, want)
+	}
+	if got, want := after[0].UploadID, "upload-b"; got != want {
+		t.Fatalf("upload id after marker = %q, want %q", got, want)
+	}
+}
+
 func TestTrailingSlashObjectDoesNotBlockNestedObjects(t *testing.T) {
 	ctx := context.Background()
 	objects, err := NewFilesystemObjectStore(filepath.Join(t.TempDir(), "objects"))

@@ -79,6 +79,9 @@ func (m *FailingMetadataStore) CreateMultipartUpload(context.Context, core.Multi
 func (m *FailingMetadataStore) GetMultipartUpload(context.Context, string) (core.MultipartUpload, error) {
 	return core.MultipartUpload{}, core.ErrNotFound
 }
+func (m *FailingMetadataStore) ListMultipartUploads(context.Context, string, string, string, string, int) ([]core.MultipartUpload, error) {
+	return nil, nil
+}
 func (m *FailingMetadataStore) PutMultipartPart(context.Context, core.MultipartPart) error {
 	return nil
 }
@@ -149,6 +152,9 @@ func (m *MultipartMetadataStore) CreateMultipartUpload(context.Context, core.Mul
 }
 func (m *MultipartMetadataStore) GetMultipartUpload(context.Context, string) (core.MultipartUpload, error) {
 	return core.MultipartUpload{UploadID: m.UploadID, Bucket: m.Bucket, Key: m.Key}, nil
+}
+func (m *MultipartMetadataStore) ListMultipartUploads(context.Context, string, string, string, string, int) ([]core.MultipartUpload, error) {
+	return []core.MultipartUpload{{UploadID: m.UploadID, Bucket: m.Bucket, Key: m.Key}}, nil
 }
 func (m *MultipartMetadataStore) PutMultipartPart(context.Context, core.MultipartPart) error {
 	return nil

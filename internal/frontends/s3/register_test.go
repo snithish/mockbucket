@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/snithish/mockbucket/internal/core"
 	"github.com/snithish/mockbucket/internal/frontends/common"
@@ -268,6 +269,86 @@ func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
 	}
 	if got := string(body); got != "payload" {
 		t.Fatalf("dst body = %q, want %q", got, "payload")
+	}
+}
+
+func TestDeleteBucketReturnsNoContentForEmptyBucket(t *testing.T) {
+	fixture := newS3StoreFixture(t)
+	if err := fixture.metadata.CreateBucket(fixture.ctx, "logs"); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+	deps := fixture.deps()
+
+	req := httptest.NewRequest(http.MethodDelete, "/logs", nil)
+	req.SetPathValue("bucket", "logs")
+	rec := httptest.NewRecorder()
+
+	handleDeleteBucket(rec, req, deps, "logs")
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
+func TestListPartsReturnsMultipartXML(t *testing.T) {
+	meta := &storagetest.MultipartMetadataStore{
+		Bucket:   "demo",
+		Key:      "object.txt",
+		UploadID: "upload-1",
+		Parts: []core.MultipartPart{
+			{UploadID: "upload-1", PartNumber: 1, ETag: "etag-1", Size: 5},
+			{UploadID: "upload-1", PartNumber: 2, ETag: "etag-2", Size: 7},
+		},
+	}
+	deps := common.Dependencies{Metadata: meta}
+
+	req := httptest.NewRequest(http.MethodGet, "/demo/object.txt?uploadId=upload-1", nil)
+	req.SetPathValue("bucket", "demo")
+	req.SetPathValue("key", "object.txt")
+	rec := httptest.NewRecorder()
+
+	handleListParts(rec, req, deps, "demo", "object.txt")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<ListPartsResult") {
+		t.Fatalf("expected ListPartsResult XML, got %q", body)
+	}
+	if !strings.Contains(body, "<PartNumber>1</PartNumber>") || !strings.Contains(body, "<PartNumber>2</PartNumber>") {
+		t.Fatalf("expected both parts in response, got %q", body)
+	}
+}
+
+func TestListMultipartUploadsReturnsUploadXML(t *testing.T) {
+	fixture := newS3StoreFixture(t)
+	deps := fixture.deps()
+	now := time.Now().UTC()
+	for _, upload := range []core.MultipartUpload{
+		{UploadID: "upload-a", Bucket: "demo", Key: "prefix/a.txt", CreatedAt: now},
+		{UploadID: "upload-b", Bucket: "demo", Key: "prefix/b.txt", CreatedAt: now.Add(time.Second)},
+	} {
+		if err := fixture.metadata.CreateMultipartUpload(fixture.ctx, upload); err != nil {
+			t.Fatalf("CreateMultipartUpload(%s) error = %v", upload.UploadID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/demo?uploads&prefix=prefix/", nil)
+	req.SetPathValue("bucket", "demo")
+	rec := httptest.NewRecorder()
+
+	handleListMultipartUploads(rec, req, deps, "demo")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<ListMultipartUploadsResult") {
+		t.Fatalf("expected ListMultipartUploadsResult XML, got %q", body)
+	}
+	if !strings.Contains(body, "<UploadId>upload-a</UploadId>") || !strings.Contains(body, "<UploadId>upload-b</UploadId>") {
+		t.Fatalf("expected uploads in response, got %q", body)
 	}
 }
 

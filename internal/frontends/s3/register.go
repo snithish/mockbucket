@@ -23,8 +23,12 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 		switch {
 		case r.Method == http.MethodPut:
 			handleCreateBucket(w, r, deps, bucket)
+		case r.Method == http.MethodDelete:
+			handleDeleteBucket(w, r, deps, bucket)
 		case r.Method == http.MethodPost && hasDeleteQuery(r):
 			handleDeleteObjects(w, r, deps, bucket)
+		case r.Method == http.MethodGet && hasUploadsQuery(r):
+			handleListMultipartUploads(w, r, deps, bucket)
 		case r.Method == http.MethodHead:
 			handleHeadBucket(w, r, deps, bucket)
 		case r.Method == http.MethodGet && hasLocationQuery(r):
@@ -45,10 +49,14 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies) {
 			handleGetBucketLocation(w, r, deps, bucket)
 		case key == "" && r.Method == http.MethodPost && hasDeleteQuery(r):
 			handleDeleteObjects(w, r, deps, bucket)
+		case key == "" && r.Method == http.MethodGet && hasUploadsQuery(r):
+			handleListMultipartUploads(w, r, deps, bucket)
 		case key == "":
 			http.NotFound(w, r)
 		case r.Method == http.MethodPost && hasUploadsQuery(r):
 			handleCreateMultipartUpload(w, r, deps, bucket, key)
+		case r.Method == http.MethodGet && hasUploadIDQuery(r):
+			handleListParts(w, r, deps, bucket, key)
 		case r.Method == http.MethodPut && hasUploadIDQuery(r):
 			handleUploadPart(w, r, deps, bucket, key)
 		case r.Method == http.MethodPost && hasUploadIDQuery(r):
@@ -99,6 +107,18 @@ func handleCreateBucket(w http.ResponseWriter, r *http.Request, deps common.Depe
 	}
 	w.Header().Set("Location", "/"+bucket)
 	w.WriteHeader(http.StatusOK)
+}
+
+func handleDeleteBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	if err := deps.Metadata.DeleteBucket(r.Context(), bucket); err != nil {
+		if err == core.ErrConflict {
+			writeS3Error(w, http.StatusConflict, "BucketNotEmpty", "The bucket you tried to delete is not empty.")
+			return
+		}
+		writeBucketError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleHeadBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
@@ -468,6 +488,110 @@ func handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, deps com
 	}
 	_ = deps.Objects.AbortMultipartUpload(r.Context(), upload.UploadID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleListMultipartUploads(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeBucketError(w, err)
+		return
+	}
+	maxUploads, err := parseMaxUploads(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	prefix := r.URL.Query().Get("prefix")
+	keyMarker := r.URL.Query().Get("key-marker")
+	uploadIDMarker := r.URL.Query().Get("upload-id-marker")
+	uploads, err := deps.Metadata.ListMultipartUploads(r.Context(), bucket, prefix, keyMarker, uploadIDMarker, maxUploads+1)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	result := listMultipartUploadsResult{
+		Xmlns:          xmlNamespace,
+		Bucket:         bucket,
+		KeyMarker:      keyMarker,
+		UploadIDMarker: uploadIDMarker,
+		MaxUploads:     maxUploads,
+		Prefix:         prefix,
+	}
+	if len(uploads) > maxUploads {
+		result.IsTruncated = true
+		uploads = uploads[:maxUploads]
+	}
+	if result.IsTruncated && len(uploads) > 0 {
+		result.NextKeyMarker = uploads[len(uploads)-1].Key
+		result.NextUploadID = uploads[len(uploads)-1].UploadID
+	}
+	for _, upload := range uploads {
+		result.Uploads = append(result.Uploads, multipartUpload{
+			Key:       upload.Key,
+			UploadID:  upload.UploadID,
+			Initiated: upload.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeXML(w, http.StatusOK, result)
+}
+
+func handleListParts(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket, key string) {
+	if strings.TrimSpace(key) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := deps.Metadata.GetBucket(r.Context(), bucket); err != nil {
+		writeBucketError(w, err)
+		return
+	}
+	upload, ok := loadMultipartUpload(w, r, deps, bucket, key)
+	if !ok {
+		return
+	}
+	partNumberMarker, err := parsePartNumberMarker(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	maxParts, err := parseMaxParts(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	parts, err := deps.Metadata.ListMultipartParts(r.Context(), upload.UploadID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	filtered := make([]core.MultipartPart, 0, len(parts))
+	for _, part := range parts {
+		if part.PartNumber > partNumberMarker {
+			filtered = append(filtered, part)
+		}
+	}
+	result := listPartsResult{
+		Xmlns:            xmlNamespace,
+		Bucket:           bucket,
+		Key:              key,
+		UploadID:         upload.UploadID,
+		PartNumberMarker: partNumberMarker,
+		MaxParts:         maxParts,
+	}
+	if len(filtered) > maxParts {
+		result.IsTruncated = true
+		filtered = filtered[:maxParts]
+	}
+	if len(filtered) > 0 {
+		result.NextPartNumberMarker = filtered[len(filtered)-1].PartNumber
+	}
+	for _, part := range filtered {
+		result.Parts = append(result.Parts, multipartPart{
+			PartNumber:   part.PartNumber,
+			LastModified: part.CreatedAt.UTC().Format(time.RFC3339),
+			ETag:         `"` + part.ETag + `"`,
+			Size:         part.Size,
+		})
+	}
+	writeXML(w, http.StatusOK, result)
 }
 
 func handleListObjectsV2(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {

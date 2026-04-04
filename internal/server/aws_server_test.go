@@ -439,6 +439,77 @@ func TestAWSPhaseScaffolding(t *testing.T) {
 	})
 }
 
+func TestS3DeleteBucketAndMultipartListings(t *testing.T) {
+	runtime := newAWSTestRuntime(t)
+	defer runtime.Close()
+	ctx := context.Background()
+	s3Client := newS3Client(t, runtime, "admin", "admin-secret", "")
+
+	if _, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("empty-bucket")}); err != nil {
+		t.Fatalf("CreateBucket() error = %v", err)
+	}
+	if _, err := s3Client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String("empty-bucket")}); err != nil {
+		t.Fatalf("DeleteBucket() error = %v", err)
+	}
+
+	createOut, err := s3Client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String("demo"),
+		Key:    aws.String("multipart/listing.txt"),
+	})
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload() error = %v", err)
+	}
+	uploadID := aws.ToString(createOut.UploadId)
+	if uploadID == "" {
+		t.Fatal("CreateMultipartUpload() returned empty UploadId")
+	}
+
+	for index, body := range []string{"hello ", "world"} {
+		partNumber := int32(index + 1)
+		if _, err := s3Client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:     aws.String("demo"),
+			Key:        aws.String("multipart/listing.txt"),
+			UploadId:   aws.String(uploadID),
+			PartNumber: aws.Int32(partNumber),
+			Body:       strings.NewReader(body),
+		}); err != nil {
+			t.Fatalf("UploadPart(%d) error = %v", partNumber, err)
+		}
+	}
+
+	uploadsOut, err := s3Client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
+		Bucket: aws.String("demo"),
+		Prefix: aws.String("multipart/"),
+	})
+	if err != nil {
+		t.Fatalf("ListMultipartUploads() error = %v", err)
+	}
+	if len(uploadsOut.Uploads) != 1 {
+		t.Fatalf("ListMultipartUploads() count = %d, want 1", len(uploadsOut.Uploads))
+	}
+	if got, want := aws.ToString(uploadsOut.Uploads[0].Key), "multipart/listing.txt"; got != want {
+		t.Fatalf("ListMultipartUploads() key = %q, want %q", got, want)
+	}
+
+	partsOut, err := s3Client.ListParts(ctx, &s3.ListPartsInput{
+		Bucket:   aws.String("demo"),
+		Key:      aws.String("multipart/listing.txt"),
+		UploadId: aws.String(uploadID),
+	})
+	if err != nil {
+		t.Fatalf("ListParts() error = %v", err)
+	}
+	if len(partsOut.Parts) != 2 {
+		t.Fatalf("ListParts() count = %d, want 2", len(partsOut.Parts))
+	}
+	if got, want := aws.ToInt32(partsOut.Parts[0].PartNumber), int32(1); got != want {
+		t.Fatalf("ListParts() first part number = %d, want %d", got, want)
+	}
+	if got, want := aws.ToInt64(partsOut.Parts[1].Size), int64(len("world")); got != want {
+		t.Fatalf("ListParts() second part size = %d, want %d", got, want)
+	}
+}
+
 func TestS3AWSChunkedPutObject(t *testing.T) {
 	runtime := newAWSTestRuntime(t)
 	defer runtime.Close()

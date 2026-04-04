@@ -46,6 +46,7 @@ type ObjectMetadataStore interface {
 type MultipartMetadataStore interface {
 	CreateMultipartUpload(ctx context.Context, upload core.MultipartUpload) error
 	GetMultipartUpload(ctx context.Context, uploadID string) (core.MultipartUpload, error)
+	ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string, limit int) ([]core.MultipartUpload, error)
 	PutMultipartPart(ctx context.Context, part core.MultipartPart) error
 	ListMultipartParts(ctx context.Context, uploadID string) ([]core.MultipartPart, error)
 	DeleteMultipartUpload(ctx context.Context, uploadID string) error
@@ -530,6 +531,39 @@ func (s *SQLiteStore) GetMultipartUpload(ctx context.Context, uploadID string) (
 		return core.MultipartUpload{}, err
 	}
 	return upload, nil
+}
+
+func (s *SQLiteStore) ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker string, limit int) ([]core.MultipartUpload, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT upload_id, bucket, key, content_type, cache_control, content_disposition, content_encoding, content_language, custom_metadata_json, created_at
+		FROM multipart_uploads
+		WHERE bucket = ?
+		  AND key LIKE ? ESCAPE '!'
+		  AND (key > ? OR (key = ? AND upload_id > ?))
+		ORDER BY key, upload_id
+		LIMIT ?`,
+		bucket, escapeLike(prefix)+`%`, keyMarker, keyMarker, uploadIDMarker, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var uploads []core.MultipartUpload
+	for rows.Next() {
+		var upload core.MultipartUpload
+		var customMetadataJSON string
+		if err := rows.Scan(&upload.UploadID, &upload.Bucket, &upload.Key, &upload.ContentType, &upload.CacheControl, &upload.ContentDisposition, &upload.ContentEncoding, &upload.ContentLanguage, &customMetadataJSON, &upload.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := unmarshalCustomMetadata(customMetadataJSON, &upload.CustomMetadata); err != nil {
+			return nil, err
+		}
+		uploads = append(uploads, upload)
+	}
+	return uploads, rows.Err()
 }
 
 func (s *SQLiteStore) PutMultipartPart(ctx context.Context, part core.MultipartPart) error {

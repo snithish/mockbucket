@@ -297,6 +297,23 @@ func TestGCSAuthenticatedBucketAndObjectFlow(t *testing.T) {
 	}
 }
 
+func TestGCSDeleteEmptyBucket(t *testing.T) {
+	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
+		seedGCSServiceAccount(t, runtime, "delete@mock.iam.gserviceaccount.com", "delete-user", "gcs-delete-token")
+	})
+	client := newGCSClient(t, server.URL, "gcs-delete-token")
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+
+	bucket := client.Bucket("empty-bucket")
+	if err := bucket.Create(ctx, "mock-project", nil); err != nil {
+		t.Fatalf("Create(bucket) error = %v", err)
+	}
+	if err := bucket.Delete(ctx); err != nil {
+		t.Fatalf("Delete(bucket) error = %v", err)
+	}
+}
+
 func TestGCSMetadataRoundTripAndRewritePreservation(t *testing.T) {
 	_, server := newGCSTestServer(t, nil, func(runtime *Runtime) {
 		seedGCSServiceAccount(t, runtime, "meta@mock.iam.gserviceaccount.com", "meta-user", "gcs-meta-token")

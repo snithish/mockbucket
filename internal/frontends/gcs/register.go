@@ -50,6 +50,8 @@ func Register(mux *http.ServeMux, cfg config.Config, deps common.Dependencies, g
 		switch r.Method {
 		case http.MethodGet:
 			handleGetBucket(w, r, deps, r.PathValue("bucket"))
+		case http.MethodDelete:
+			handleDeleteBucket(w, r, deps, r.PathValue("bucket"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -188,6 +190,17 @@ func handleGetBucket(w http.ResponseWriter, r *http.Request, deps common.Depende
 		return
 	}
 	writeJSON(w, http.StatusOK, newBucketResponse(meta.Name, meta.CreatedAt))
+}
+
+func handleDeleteBucket(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
+	if !requireAuthenticatedRequest(w, r) {
+		return
+	}
+	if err := deps.Metadata.DeleteBucket(r.Context(), bucket); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleListObjects(w http.ResponseWriter, r *http.Request, deps common.Dependencies, bucket string) {
