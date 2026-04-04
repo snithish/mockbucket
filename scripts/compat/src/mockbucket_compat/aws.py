@@ -6,6 +6,8 @@ import os
 import shutil
 import subprocess
 import urllib.request
+import uuid
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -31,8 +33,10 @@ class AWSCompatSuite(CompatSuite):
         errors = 0
         errors += self._test_awscli()
         errors += self._test_boto3()
+        errors += self._test_conditional_requests()
         errors += self._test_presigned_urls()
         errors += self._test_multipart()
+        errors += self._test_bucket_deletion()
         errors += self._test_sts_assume_role()
         errors += self._test_sts_get_caller_identity()
         errors += self._test_sts_get_session_token()
@@ -136,6 +140,50 @@ class AWSCompatSuite(CompatSuite):
         ok("boto3")
         return 0
 
+    def _test_conditional_requests(self) -> int:
+        from botocore.exceptions import ClientError
+
+        s3 = self._make_s3_client()
+        s3.put_object(Bucket="demo", Key="compat/conditional.txt", Body=b"conditional-compat")
+
+        head = s3.head_object(Bucket="demo", Key="compat/conditional.txt")
+        etag = head["ETag"]
+        last_modified = head["LastModified"]
+
+        matched = s3.get_object(Bucket="demo", Key="compat/conditional.txt", IfMatch=etag)
+        if matched["Body"].read() != b"conditional-compat":
+            fail("boto3 conditional - IfMatch content mismatch")
+            return 1
+
+        try:
+            s3.get_object(Bucket="demo", Key="compat/conditional.txt", IfNoneMatch=etag)
+        except ClientError as err:
+            if err.response["ResponseMetadata"]["HTTPStatusCode"] != 304:
+                fail(f"boto3 conditional - IfNoneMatch status={err.response['ResponseMetadata']['HTTPStatusCode']}, want 304")
+                return 1
+        else:
+            fail("boto3 conditional - IfNoneMatch unexpectedly succeeded")
+            return 1
+
+        try:
+            s3.head_object(
+                Bucket="demo",
+                Key="compat/conditional.txt",
+                IfUnmodifiedSince=last_modified - timedelta(hours=1),
+            )
+        except ClientError as err:
+            if err.response["ResponseMetadata"]["HTTPStatusCode"] != 412:
+                fail(
+                    f"boto3 conditional - IfUnmodifiedSince status={err.response['ResponseMetadata']['HTTPStatusCode']}, want 412"
+                )
+                return 1
+        else:
+            fail("boto3 conditional - IfUnmodifiedSince unexpectedly succeeded")
+            return 1
+
+        ok("boto3 conditional requests")
+        return 0
+
     def _test_boto3_virtual_hosted(self) -> int:
         skip("boto3 virtual-hosted - covered by server tests; custom endpoint SDK behavior is environment-sensitive")
         return 0
@@ -201,6 +249,17 @@ class AWSCompatSuite(CompatSuite):
                 )
                 parts.append({"ETag": part["ETag"], "PartNumber": i + 1})
 
+            uploads = s3.list_multipart_uploads(Bucket="demo", Prefix="compat/")
+            keys = [upload["Key"] for upload in uploads.get("Uploads", [])]
+            if "compat/multipart.txt" not in keys:
+                fail(f"boto3 multipart listings - missing upload key in {keys}")
+                return 1
+
+            listed_parts = s3.list_parts(Bucket="demo", Key="compat/multipart.txt", UploadId=upload_id)
+            if [part["PartNumber"] for part in listed_parts.get("Parts", [])] != [1, 2]:
+                fail(f"boto3 list_parts - parts={listed_parts.get('Parts')}, want [1, 2]")
+                return 1
+
             s3.complete_multipart_upload(
                 Bucket="demo",
                 Key="compat/multipart.txt",
@@ -219,6 +278,35 @@ class AWSCompatSuite(CompatSuite):
             return 1
 
         ok("boto3 multipart")
+        return 0
+
+    def _test_bucket_deletion(self) -> int:
+        from botocore.exceptions import ClientError
+
+        s3 = self._make_s3_client()
+        suffix = uuid.uuid4().hex[:12]
+        empty_bucket = f"compat-empty-bucket-{suffix}"
+        nonempty_bucket = f"compat-nonempty-bucket-{suffix}"
+
+        s3.create_bucket(Bucket=empty_bucket)
+        s3.delete_bucket(Bucket=empty_bucket)
+
+        s3.create_bucket(Bucket=nonempty_bucket)
+        s3.put_object(Bucket=nonempty_bucket, Key="file.txt", Body=b"x")
+        try:
+            s3.delete_bucket(Bucket=nonempty_bucket)
+        except ClientError as err:
+            if err.response["Error"]["Code"] != "BucketNotEmpty":
+                fail(f"boto3 delete_bucket - code={err.response['Error']['Code']}, want BucketNotEmpty")
+                return 1
+        else:
+            fail("boto3 delete_bucket - non-empty bucket delete unexpectedly succeeded")
+            return 1
+        finally:
+            s3.delete_object(Bucket=nonempty_bucket, Key="file.txt")
+            s3.delete_bucket(Bucket=nonempty_bucket)
+
+        ok("boto3 bucket deletion")
         return 0
 
     def _test_sts_assume_role(self) -> int:

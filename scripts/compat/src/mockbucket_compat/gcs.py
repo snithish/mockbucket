@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+import uuid
 from typing import Any
 
 from .compat import ENDPOINT, fail, ok, skip
@@ -62,9 +63,11 @@ class GCSCompatSuite(CompatSuite):
         errors = 0
         errors += self._test_buckets()
         errors += self._test_objects()
+        errors += self._test_listing_edges()
         errors += self._test_multipart()
         errors += self._test_compose()
         errors += self._test_signed_urls()
+        errors += self._test_bucket_deletion()
         self._test_duckdb()
         if with_pyspark:
             errors += self._test_pyspark()
@@ -152,6 +155,33 @@ class GCSCompatSuite(CompatSuite):
             return 1
 
         ok("gcs objects")
+        return 0
+
+    def _test_listing_edges(self) -> int:
+        client = self._make_client()
+        bucket = client.bucket("compat-demo")
+        keys = [
+            "compat/listing/a.txt",
+            "compat/listing/sub/b.txt",
+            "compat/listing/sub/c.txt",
+        ]
+        for key in keys:
+            bucket.blob(key).upload_from_string(key.encode("utf-8"))
+
+        iterator = client.list_blobs("compat-demo", prefix="compat/listing/", delimiter="/", max_results=1)
+        first_page = next(iterator.pages)
+        first_items = [blob.name for blob in first_page]
+        if first_items != ["compat/listing/a.txt"]:
+            fail(f"gcs list_blobs delimiter page 1 - items={first_items!r}, want ['compat/listing/a.txt']")
+            return 1
+        if "compat/listing/sub/" not in iterator.prefixes:
+            fail(f"gcs list_blobs delimiter - prefixes={iterator.prefixes!r}, want compat/listing/sub/")
+            return 1
+
+        for key in keys:
+            bucket.blob(key).delete()
+
+        ok("gcs listing edges")
         return 0
 
     def _test_multipart(self) -> int:
@@ -264,6 +294,35 @@ class GCSCompatSuite(CompatSuite):
         ok("gcs signed urls")
         return 0
 
+    def _test_bucket_deletion(self) -> int:
+        from google.api_core.exceptions import Conflict
+
+        client = self._make_client()
+        suffix = uuid.uuid4().hex[:12]
+        empty_bucket_name = f"compat-empty-bucket-{suffix}"
+        nonempty_bucket_name = f"compat-nonempty-bucket-{suffix}"
+
+        empty_bucket = client.bucket(empty_bucket_name)
+        empty_bucket.create()
+        empty_bucket.delete()
+
+        nonempty_bucket = client.bucket(nonempty_bucket_name)
+        nonempty_bucket.create()
+        nonempty_bucket.blob("file.txt").upload_from_string(b"x")
+        try:
+            nonempty_bucket.delete()
+        except Conflict:
+            pass
+        else:
+            fail("gcs bucket deletion - non-empty bucket delete unexpectedly succeeded")
+            return 1
+        finally:
+            nonempty_bucket.blob("file.txt").delete()
+            nonempty_bucket.delete()
+
+        ok("gcs bucket deletion")
+        return 0
+
     def _test_duckdb(self) -> None:
         skip("duckdb - GCS requires native extension (github.com/northpolesec/duckdb-gcs) which does not support custom endpoints")
 
@@ -276,6 +335,9 @@ class GCSCompatSuite(CompatSuite):
                 key_prefix="pyspark-gcs",
             )
         except Exception as err:
+            if _is_gcs_connector_bootstrap_error(err):
+                skip(f"pyspark gcs compatibility - connector unavailable in this environment ({err})")
+                return 0
             fail(f"pyspark gcs compatibility - failed: {err}")
             return 1
         if scenarios <= 0:
@@ -283,3 +345,14 @@ class GCSCompatSuite(CompatSuite):
             return 1
         ok("pyspark gcs compatibility")
         return 0
+
+
+def _is_gcs_connector_bootstrap_error(err: Exception) -> bool:
+    text = str(err)
+    markers = (
+        "GoogleHadoopFileSystem not found",
+        "NoSuchMethodError",
+        "unknown resolver",
+        "gcs-connector",
+    )
+    return any(marker in text for marker in markers)

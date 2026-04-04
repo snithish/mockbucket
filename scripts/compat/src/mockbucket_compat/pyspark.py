@@ -8,10 +8,7 @@ from contextlib import contextmanager
 from typing import Any
 
 DEFAULT_S3_PACKAGES = "org.apache.hadoop:hadoop-aws:3.3.4"
-DEFAULT_GCS_JARS = (
-    "https://repo1.maven.org/maven2/com/google/cloud/bigdataoss/gcs-connector/"
-    "hadoop3-2.2.26/gcs-connector-hadoop3-2.2.26-shaded.jar"
-)
+DEFAULT_GCS_PACKAGES = "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.26"
 
 
 def _base_builder(app_name: str) -> "SparkSession.Builder":
@@ -85,8 +82,8 @@ def gcs_roundtrip(
     """Run PySpark compatibility checks through gs:// and return the scenario count."""
     with _spark_session(
         app_name="mockbucket-compat-gcs",
-        packages=os.environ.get("MOCKBUCKET_SPARK_GCS_PACKAGES", ""),
-        jars=os.environ.get("MOCKBUCKET_SPARK_GCS_JARS", DEFAULT_GCS_JARS),
+        packages=os.environ.get("MOCKBUCKET_SPARK_GCS_PACKAGES", DEFAULT_GCS_PACKAGES),
+        jars=os.environ.get("MOCKBUCKET_SPARK_GCS_JARS", ""),
         configs={
             "spark.hadoop.fs.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
             "spark.hadoop.fs.AbstractFileSystem.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
@@ -145,6 +142,8 @@ def _run_compat_matrix(spark: "SparkSession", base_path: str) -> int:
     checks += _verify_parquet_write_modes(spark, frame, append_frame, overwrite_frame, f"{base_path}/parquet")
     checks += _verify_partition_overwrite(spark, frame, overwrite_frame, f"{base_path}/partitioned")
     checks += _verify_delimited_formats(spark, frame, text_frame, f"{base_path}/formats")
+    checks += _verify_single_file_outputs(spark, text_frame, f"{base_path}/single-file")
+    checks += _verify_success_markers(spark, text_frame, f"{base_path}/markers")
     checks += _verify_filesystem_ops(spark, text_frame, f"{base_path}/filesystem")
 
     return checks
@@ -290,6 +289,40 @@ def _verify_filesystem_ops(spark: "SparkSession", text_frame: "DataFrame", base_
         raise RuntimeError(f"filesystem target path still exists after delete: {target_path}")
 
     return 5
+
+
+def _verify_single_file_outputs(spark: "SparkSession", text_frame: "DataFrame", base_path: str) -> int:
+    csv_path = f"{base_path}/csv"
+
+    text_frame.coalesce(1).write.mode("overwrite").option("header", "false").csv(csv_path)
+
+    fs = _filesystem_for_path(spark, csv_path)
+    part_files = fs.globStatus(_path_for(f"{csv_path}/part-*"))
+    if len(part_files) != 1:
+        raise RuntimeError(f"single-file output produced {len(part_files)} part files, want 1")
+
+    actual = sorted(row._c0 for row in spark.read.csv(csv_path).collect())
+    if actual != ["alpha", "beta", "gamma"]:
+        raise RuntimeError(f"single-file csv rows={actual}, want ['alpha', 'beta', 'gamma']")
+
+    return 2
+
+
+def _verify_success_markers(spark: "SparkSession", text_frame: "DataFrame", base_path: str) -> int:
+    text_path = f"{base_path}/text"
+
+    text_frame.write.mode("overwrite").text(text_path)
+
+    fs = _filesystem_for_path(spark, text_path)
+    success_path = f"{text_path}/_SUCCESS"
+    if not _path_exists(fs, success_path):
+        raise RuntimeError(f"missing success marker at {success_path}")
+
+    temporary_path = f"{text_path}/_temporary"
+    if _path_exists(fs, temporary_path):
+        raise RuntimeError(f"temporary path still exists after commit: {temporary_path}")
+
+    return 2
 
 
 def _assert_rows_equal(frame: "DataFrame", expected: list[tuple[int, str, str]]) -> None:
