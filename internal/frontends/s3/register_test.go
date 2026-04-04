@@ -20,7 +20,8 @@ import (
 )
 
 func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that object bytes are removed if metadata persistence fails after upload.
+	fixture := newS3TestFixture(t)
 	meta := &storagetest.FailingMetadataStore{Bucket: "demo", PutErr: errors.New("db down")}
 	deps := common.Dependencies{Metadata: meta, Objects: fixture.objects}
 
@@ -41,7 +42,8 @@ func TestPutObjectRollsBackOnMetadataFailure(t *testing.T) {
 }
 
 func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that an empty aws-chunked upload still creates a zero-byte object with the expected ETag.
+	fixture := newS3TestFixture(t)
 	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/empty/", strings.NewReader("0;chunk-signature=deadbeef\r\n\r\n"))
@@ -77,7 +79,8 @@ func TestPutObjectDecodesAWSChunkedEmptyPayload(t *testing.T) {
 }
 
 func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that aws-chunked framing is stripped before the stored object bytes are persisted.
+	fixture := newS3TestFixture(t)
 	deps := fixture.deps()
 
 	req := httptest.NewRequest(http.MethodPut, "/demo/file.txt", strings.NewReader("5;chunk-signature=deadbeef\r\nhello\r\n0;chunk-signature=feedface\r\nx-amz-checksum-crc32:AAAAAA==\r\n\r\n"))
@@ -110,7 +113,8 @@ func TestPutObjectDecodesAWSChunkedPayload(t *testing.T) {
 }
 
 func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that S3 delete remains idempotent even when metadata reports the object as missing.
+	fixture := newS3TestFixture(t)
 	if _, err := fixture.objects.PutObject(fixture.ctx, "demo", "file.txt", bytes.NewBufferString("payload")); err != nil {
 		t.Fatalf("PutObject() error = %v", err)
 	}
@@ -134,7 +138,8 @@ func TestDeleteObjectUsesMetadataTruth(t *testing.T) {
 }
 
 func TestDeleteObjectsRemovesExistingAndMissingKeys(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that bulk delete reports every requested key and removes any existing objects.
+	fixture := newS3TestFixture(t)
 	for _, key := range []string{"compat/pyspark/regular/part-0000", "compat/pyspark/regular/_temporary/0/"} {
 		meta, err := fixture.objects.PutObject(fixture.ctx, "demo", key, strings.NewReader("payload"))
 		if err != nil {
@@ -183,7 +188,8 @@ func TestDeleteObjectsRemovesExistingAndMissingKeys(t *testing.T) {
 }
 
 func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that delimiter listing collapses descendants into CommonPrefixes instead of listing every leaf.
+	fixture := newS3TestFixture(t)
 	for _, item := range []struct {
 		key  string
 		body string
@@ -231,7 +237,8 @@ func TestListObjectsV2GroupsCommonPrefixesWithDelimiter(t *testing.T) {
 }
 
 func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that copy-object returns the XML envelope and persists the copied payload.
+	fixture := newS3TestFixture(t)
 	srcMeta, err := fixture.objects.PutObject(fixture.ctx, "demo", "src.txt", strings.NewReader("payload"))
 	if err != nil {
 		t.Fatalf("PutObject(src) error = %v", err)
@@ -272,8 +279,97 @@ func TestCopyObjectReturnsCopyResultXML(t *testing.T) {
 	}
 }
 
+func TestPutObjectMetadataRoundTripAndCopyPreservation(t *testing.T) {
+	// This checks that S3 object metadata survives head/get reads and a subsequent server-side copy.
+	fixture := newS3TestFixture(t)
+	deps := fixture.deps()
+
+	putReq := httptest.NewRequest(http.MethodPut, "/demo/meta.txt", strings.NewReader("hello"))
+	putReq.Header.Set("Content-Type", "text/plain")
+	putReq.Header.Set("Cache-Control", "max-age=60")
+	putReq.Header.Set("Content-Disposition", "attachment; filename=meta.txt")
+	putReq.Header.Set("Content-Encoding", "gzip")
+	putReq.Header.Set("Content-Language", "en")
+	putReq.Header.Set("X-Amz-Meta-Team", "platform")
+	putReq.SetPathValue("bucket", "demo")
+	putReq.SetPathValue("key", "meta.txt")
+	putRec := httptest.NewRecorder()
+
+	handlePutObject(putRec, putReq, deps, "demo", "meta.txt")
+
+	if got, want := putRec.Code, http.StatusOK; got != want {
+		t.Fatalf("put status = %d, want %d", got, want)
+	}
+
+	headReq := httptest.NewRequest(http.MethodHead, "/demo/meta.txt", nil)
+	headReq.SetPathValue("bucket", "demo")
+	headReq.SetPathValue("key", "meta.txt")
+	headRec := httptest.NewRecorder()
+	handleHeadObject(headRec, headReq, deps, "demo", "meta.txt")
+
+	if got, want := headRec.Code, http.StatusOK; got != want {
+		t.Fatalf("head status = %d, want %d", got, want)
+	}
+	if got, want := headRec.Header().Get("Content-Type"), "text/plain"; got != want {
+		t.Fatalf("head content type = %q, want %q", got, want)
+	}
+	if got, want := headRec.Header().Get("Cache-Control"), "max-age=60"; got != want {
+		t.Fatalf("head cache control = %q, want %q", got, want)
+	}
+	if got, want := headRec.Header().Get("X-Amz-Meta-Team"), "platform"; got != want {
+		t.Fatalf("head metadata team = %q, want %q", got, want)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/demo/meta.txt", nil)
+	getReq.SetPathValue("bucket", "demo")
+	getReq.SetPathValue("key", "meta.txt")
+	getRec := httptest.NewRecorder()
+	handleGetObject(getRec, getReq, deps, "demo", "meta.txt")
+
+	if got, want := getRec.Code, http.StatusOK; got != want {
+		t.Fatalf("get status = %d, want %d", got, want)
+	}
+	if got, want := getRec.Header().Get("Content-Disposition"), "attachment; filename=meta.txt"; got != want {
+		t.Fatalf("get content disposition = %q, want %q", got, want)
+	}
+	if got, want := getRec.Header().Get("Content-Encoding"), "gzip"; got != want {
+		t.Fatalf("get content encoding = %q, want %q", got, want)
+	}
+	if got, want := getRec.Header().Get("Content-Language"), "en"; got != want {
+		t.Fatalf("get content language = %q, want %q", got, want)
+	}
+
+	copyReq := httptest.NewRequest(http.MethodPut, "/demo/meta-copy.txt", nil)
+	copyReq.Header.Set("X-Amz-Copy-Source", "/demo/meta.txt")
+	copyReq.SetPathValue("bucket", "demo")
+	copyReq.SetPathValue("key", "meta-copy.txt")
+	copyRec := httptest.NewRecorder()
+	handlePutObject(copyRec, copyReq, deps, "demo", "meta-copy.txt")
+
+	if got, want := copyRec.Code, http.StatusOK; got != want {
+		t.Fatalf("copy status = %d, want %d, body = %q", got, want, copyRec.Body.String())
+	}
+
+	copyHeadReq := httptest.NewRequest(http.MethodHead, "/demo/meta-copy.txt", nil)
+	copyHeadReq.SetPathValue("bucket", "demo")
+	copyHeadReq.SetPathValue("key", "meta-copy.txt")
+	copyHeadRec := httptest.NewRecorder()
+	handleHeadObject(copyHeadRec, copyHeadReq, deps, "demo", "meta-copy.txt")
+
+	if got, want := copyHeadRec.Code, http.StatusOK; got != want {
+		t.Fatalf("copy head status = %d, want %d", got, want)
+	}
+	if got, want := copyHeadRec.Header().Get("Content-Type"), "text/plain"; got != want {
+		t.Fatalf("copy content type = %q, want %q", got, want)
+	}
+	if got, want := copyHeadRec.Header().Get("X-Amz-Meta-Team"), "platform"; got != want {
+		t.Fatalf("copy metadata team = %q, want %q", got, want)
+	}
+}
+
 func TestDeleteBucketReturnsNoContentForEmptyBucket(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that deleting an empty bucket returns the S3 no-content success status.
+	fixture := newS3TestFixture(t)
 	if err := fixture.metadata.CreateBucket(fixture.ctx, "logs"); err != nil {
 		t.Fatalf("CreateBucket() error = %v", err)
 	}
@@ -291,6 +387,7 @@ func TestDeleteBucketReturnsNoContentForEmptyBucket(t *testing.T) {
 }
 
 func TestListPartsReturnsMultipartXML(t *testing.T) {
+	// This checks that list-parts renders the expected XML payload for an in-progress multipart upload.
 	meta := &storagetest.MultipartMetadataStore{
 		Bucket:   "demo",
 		Key:      "object.txt",
@@ -322,7 +419,8 @@ func TestListPartsReturnsMultipartXML(t *testing.T) {
 }
 
 func TestListMultipartUploadsReturnsUploadXML(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that list-multipart-uploads returns the active uploads in the S3 XML envelope.
+	fixture := newS3TestFixture(t)
 	deps := fixture.deps()
 	now := time.Now().UTC()
 	for _, upload := range []core.MultipartUpload{
@@ -353,7 +451,8 @@ func TestListMultipartUploadsReturnsUploadXML(t *testing.T) {
 }
 
 func TestGetObjectInvalidRangeReturns416(t *testing.T) {
-	fixture := newS3StoreFixture(t)
+	// This checks that invalid range requests produce the S3 InvalidRange response with a content-range hint.
+	fixture := newS3TestFixture(t)
 	meta, err := fixture.objects.PutObject(fixture.ctx, "demo", "file.txt", bytes.NewBufferString("hello"))
 	if err != nil {
 		t.Fatalf("PutObject() error = %v", err)
@@ -382,7 +481,71 @@ func TestGetObjectInvalidRangeReturns416(t *testing.T) {
 	}
 }
 
+func TestGetObjectConditionalHeadersHonorPreconditions(t *testing.T) {
+	// This checks that GET and HEAD requests honor If-Match, If-None-Match, If-Modified-Since, and If-Unmodified-Since.
+	fixture := newS3TestFixture(t)
+	meta, err := fixture.objects.PutObject(fixture.ctx, "demo", "conditional.txt", bytes.NewBufferString("conditional-body"))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if err := fixture.metadata.PutObject(fixture.ctx, meta); err != nil {
+		t.Fatalf("PutObject(metadata) error = %v", err)
+	}
+	deps := fixture.deps()
+
+	matchReq := httptest.NewRequest(http.MethodGet, "/demo/conditional.txt", nil)
+	matchReq.Header.Set("If-Match", `"`+meta.ETag+`"`)
+	matchReq.SetPathValue("bucket", "demo")
+	matchReq.SetPathValue("key", "conditional.txt")
+	matchRec := httptest.NewRecorder()
+	handleGetObject(matchRec, matchReq, deps, "demo", "conditional.txt")
+	if got, want := matchRec.Code, http.StatusOK; got != want {
+		t.Fatalf("If-Match status = %d, want %d", got, want)
+	}
+
+	failedMatchReq := httptest.NewRequest(http.MethodGet, "/demo/conditional.txt", nil)
+	failedMatchReq.Header.Set("If-Match", "\"wrong-etag\"")
+	failedMatchReq.SetPathValue("bucket", "demo")
+	failedMatchReq.SetPathValue("key", "conditional.txt")
+	failedMatchRec := httptest.NewRecorder()
+	handleGetObject(failedMatchRec, failedMatchReq, deps, "demo", "conditional.txt")
+	if got, want := failedMatchRec.Code, http.StatusPreconditionFailed; got != want {
+		t.Fatalf("failed If-Match status = %d, want %d", got, want)
+	}
+
+	noneMatchReq := httptest.NewRequest(http.MethodGet, "/demo/conditional.txt", nil)
+	noneMatchReq.Header.Set("If-None-Match", `"`+meta.ETag+`"`)
+	noneMatchReq.SetPathValue("bucket", "demo")
+	noneMatchReq.SetPathValue("key", "conditional.txt")
+	noneMatchRec := httptest.NewRecorder()
+	handleGetObject(noneMatchRec, noneMatchReq, deps, "demo", "conditional.txt")
+	if got, want := noneMatchRec.Code, http.StatusNotModified; got != want {
+		t.Fatalf("If-None-Match status = %d, want %d", got, want)
+	}
+
+	modifiedSinceReq := httptest.NewRequest(http.MethodHead, "/demo/conditional.txt", nil)
+	modifiedSinceReq.Header.Set("If-Modified-Since", meta.ModifiedAt.UTC().Add(time.Hour).Format(http.TimeFormat))
+	modifiedSinceReq.SetPathValue("bucket", "demo")
+	modifiedSinceReq.SetPathValue("key", "conditional.txt")
+	modifiedSinceRec := httptest.NewRecorder()
+	handleHeadObject(modifiedSinceRec, modifiedSinceReq, deps, "demo", "conditional.txt")
+	if got, want := modifiedSinceRec.Code, http.StatusNotModified; got != want {
+		t.Fatalf("If-Modified-Since status = %d, want %d", got, want)
+	}
+
+	unmodifiedSinceReq := httptest.NewRequest(http.MethodHead, "/demo/conditional.txt", nil)
+	unmodifiedSinceReq.Header.Set("If-Unmodified-Since", meta.ModifiedAt.UTC().Add(-time.Hour).Format(http.TimeFormat))
+	unmodifiedSinceReq.SetPathValue("bucket", "demo")
+	unmodifiedSinceReq.SetPathValue("key", "conditional.txt")
+	unmodifiedSinceRec := httptest.NewRecorder()
+	handleHeadObject(unmodifiedSinceRec, unmodifiedSinceReq, deps, "demo", "conditional.txt")
+	if got, want := unmodifiedSinceRec.Code, http.StatusPreconditionFailed; got != want {
+		t.Fatalf("If-Unmodified-Since status = %d, want %d", got, want)
+	}
+}
+
 func TestWriteErrorUsesS3XMLEnvelope(t *testing.T) {
+	// This checks that S3 errors are serialized with the XML error envelope and mapped status code.
 	rec := httptest.NewRecorder()
 	writeError(rec, core.ErrInvalidArgument)
 
@@ -402,6 +565,7 @@ func TestWriteErrorUsesS3XMLEnvelope(t *testing.T) {
 }
 
 func TestGetObjectMissingBucketReturnsNoSuchBucket(t *testing.T) {
+	// This checks that missing buckets return the S3 NoSuchBucket error response.
 	deps := common.Dependencies{
 		Metadata: &storagetest.FailingMetadataStore{BucketErr: core.ErrNotFound},
 	}
@@ -421,6 +585,7 @@ func TestGetObjectMissingBucketReturnsNoSuchBucket(t *testing.T) {
 }
 
 func TestGetObjectMissingKeyReturnsNoSuchKey(t *testing.T) {
+	// This checks that missing objects in an existing bucket return the S3 NoSuchKey error response.
 	deps := common.Dependencies{
 		Metadata: &storagetest.FailingMetadataStore{Bucket: "demo"},
 	}
@@ -440,6 +605,7 @@ func TestGetObjectMissingKeyReturnsNoSuchKey(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsMalformedPayload(t *testing.T) {
+	// This checks that malformed complete-multipart XML is rejected as an invalid argument.
 	meta := &storagetest.MultipartMetadataStore{
 		Bucket:   "demo",
 		Key:      "object.txt",
@@ -467,6 +633,7 @@ func TestCompleteMultipartRejectsMalformedPayload(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsOutOfOrderParts(t *testing.T) {
+	// This checks that multipart completion rejects parts that are not listed in ascending part-number order.
 	meta := &storagetest.MultipartMetadataStore{
 		Bucket:   "demo",
 		Key:      "object.txt",
@@ -498,6 +665,7 @@ func TestCompleteMultipartRejectsOutOfOrderParts(t *testing.T) {
 }
 
 func TestCompleteMultipartRejectsDuplicatePartNumbers(t *testing.T) {
+	// This checks that multipart completion rejects duplicate part numbers in the completion payload.
 	meta := &storagetest.MultipartMetadataStore{
 		Bucket:   "demo",
 		Key:      "object.txt",
@@ -528,6 +696,7 @@ func TestCompleteMultipartRejectsDuplicatePartNumbers(t *testing.T) {
 }
 
 func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
+	// This checks that multipart completion rolls back the assembled object if cleanup of multipart state fails.
 	ctx := context.Background()
 	dir := t.TempDir()
 	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
@@ -582,33 +751,4 @@ func TestCompleteMultipartRollbackOnDeleteFailure(t *testing.T) {
 	if _, _, err := objects.OpenObject(ctx, "demo", "object.txt"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("expected object rollback, got %v", err)
 	}
-}
-
-type s3StoreFixture struct {
-	ctx      context.Context
-	metadata *storage.SQLiteStore
-	objects  *storage.FilesystemObjectStore
-}
-
-func newS3StoreFixture(t *testing.T) s3StoreFixture {
-	t.Helper()
-	ctx := context.Background()
-	dir := t.TempDir()
-	objects, err := storage.NewFilesystemObjectStore(filepath.Join(dir, "objects"))
-	if err != nil {
-		t.Fatalf("NewFilesystemObjectStore() error = %v", err)
-	}
-	metadata, err := storage.OpenSQLite(filepath.Join(dir, "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	t.Cleanup(func() { _ = metadata.Close() })
-	if err := metadata.EnsureBucket(ctx, "demo"); err != nil {
-		t.Fatalf("EnsureBucket() error = %v", err)
-	}
-	return s3StoreFixture{ctx: ctx, metadata: metadata, objects: objects}
-}
-
-func (f s3StoreFixture) deps() common.Dependencies {
-	return common.Dependencies{Metadata: f.metadata, Objects: f.objects}
 }

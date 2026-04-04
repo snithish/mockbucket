@@ -4,20 +4,16 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/snithish/mockbucket/internal/core"
-	"github.com/snithish/mockbucket/internal/frontends/common"
-	"github.com/snithish/mockbucket/internal/iam"
 	"github.com/snithish/mockbucket/internal/storage"
 )
 
 func TestHandleAssumeRoleUnsupportedActionReturnsNotFound(t *testing.T) {
+	// This checks that unknown STS actions fall through to the not-found response.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 
 	req := httptest.NewRequest(http.MethodGet, "/?Action=UnknownAction", nil)
 	rec := httptest.NewRecorder()
@@ -29,8 +25,8 @@ func TestHandleAssumeRoleUnsupportedActionReturnsNotFound(t *testing.T) {
 }
 
 func TestHandleAssumeRoleMissingRoleReturnsNotFound(t *testing.T) {
+	// This checks that AssumeRole returns not found when the requested role does not exist.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -46,8 +42,8 @@ func TestHandleAssumeRoleMissingRoleReturnsNotFound(t *testing.T) {
 }
 
 func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
+	// This checks that AssumeRole is forbidden when the caller's access key is not allowed to assume the role.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 	state := storage.SeedState{
 		Roles: []core.Role{{Name: "reader"}},
 		AccessKeys: []storage.SeedAccessKey{
@@ -77,8 +73,8 @@ func TestHandleAssumeRoleAccessDeniedWhenRoleNotAllowed(t *testing.T) {
 }
 
 func TestHandleAssumeRoleInvalidArgumentWhenSessionNameMissing(t *testing.T) {
+	// This checks that AssumeRole validates the required RoleSessionName parameter.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 	if err := fixture.metadata.UpsertRole(context.Background(), core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -97,8 +93,8 @@ func TestHandleAssumeRoleInvalidArgumentWhenSessionNameMissing(t *testing.T) {
 }
 
 func TestHandleGetCallerIdentityForAccessKey(t *testing.T) {
+	// This checks that GetCallerIdentity reports the long-lived access key principal.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 	state := storage.SeedState{
 		AccessKeys: []storage.SeedAccessKey{{ID: "admin", Secret: "admin-secret"}},
 	}
@@ -120,8 +116,8 @@ func TestHandleGetCallerIdentityForAccessKey(t *testing.T) {
 }
 
 func TestHandleGetCallerIdentityForSession(t *testing.T) {
+	// This checks that GetCallerIdentity reports the assumed-role session principal and user ID.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 	if err := fixture.metadata.UpsertRole(context.Background(), core.Role{Name: "reader"}); err != nil {
 		t.Fatalf("UpsertRole() error = %v", err)
 	}
@@ -145,8 +141,8 @@ func TestHandleGetCallerIdentityForSession(t *testing.T) {
 }
 
 func TestHandleGetSessionTokenIssuesBoundedSession(t *testing.T) {
+	// This checks that GetSessionToken returns a usable temporary session even when the requested duration is oversized.
 	fixture := newSTSTestFixture(t)
-	defer fixture.cleanup()
 	state := storage.SeedState{
 		AccessKeys: []storage.SeedAccessKey{{ID: "admin", Secret: "admin-secret"}},
 	}
@@ -174,32 +170,4 @@ func containsAll(body string, values ...string) bool {
 		}
 	}
 	return true
-}
-
-type stsTestFixture struct {
-	deps     common.Dependencies
-	metadata *storage.SQLiteStore
-}
-
-func newSTSTestFixture(t *testing.T) stsTestFixture {
-	t.Helper()
-	metadata, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "mockbucket.db"))
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	sessionManager := iam.SessionManager{
-		Store:           metadata,
-		DefaultDuration: time.Hour,
-	}
-	deps := common.Dependencies{
-		SessionManager: sessionManager,
-	}
-	return stsTestFixture{
-		deps:     deps,
-		metadata: metadata,
-	}
-}
-
-func (fixture stsTestFixture) cleanup() {
-	_ = fixture.metadata.Close()
 }

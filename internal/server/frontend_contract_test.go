@@ -19,26 +19,6 @@ type contractListResult struct {
 	Truncated bool
 }
 
-// These phase-0 scaffolding types keep future compatibility tests speaking the
-// same vocabulary before the underlying provider behavior lands.
-type contractMetadata struct {
-	ContentType        string
-	CacheControl       string
-	ContentDisposition string
-	ContentEncoding    string
-	ContentLanguage    string
-	Custom             map[string]string
-}
-
-type contractConditions struct {
-	IfMatch               string
-	IfNoneMatch           string
-	IfModifiedSince       string
-	IfUnmodifiedSince     string
-	IfGenerationMatch     int64
-	IfMetagenerationMatch int64
-}
-
 type frontendContractClient interface {
 	CreateBucket(ctx context.Context, bucket string) error
 	HeadBucket(ctx context.Context, bucket string) error
@@ -55,10 +35,10 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 	t.Helper()
 
 	t.Run("BucketLevelAPI", func(t *testing.T) {
+		// This checks that both frontends expose the same seeded bucket visibility and bucket CRUD contract.
 		client := newClient(t)
 		ctx := context.Background()
 
-		// Seed visibility and bucket creation need to behave the same across S3 and GCS clients.
 		listOut, err := client.ListBuckets(ctx)
 		if err != nil {
 			t.Fatalf("ListBuckets() error = %v", err)
@@ -88,10 +68,10 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 	})
 
 	t.Run("ObjectCRUD", func(t *testing.T) {
+		// This checks that create, overwrite, read, head, and delete follow the same object contract across frontends.
 		client := newClient(t)
 		ctx := context.Background()
 
-		// Overwrite semantics are part of the emulator contract, not just basic upload/download plumbing.
 		etag, err := client.PutObject(ctx, "demo", "logs/app.log", "hello")
 		if err != nil {
 			t.Fatalf("PutObject() error = %v", err)
@@ -144,9 +124,9 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 	})
 
 	t.Run("ListObjects", func(t *testing.T) {
+		// This checks that prefix filtering, pagination, and cursor semantics stay aligned across frontends.
 		client := newClient(t)
 		ctx := context.Background()
-		// Pagination and cursor semantics are shared behavior that both frontends should expose consistently.
 		for _, key := range []string{
 			"logs/2024-01.txt",
 			"logs/2024-02.txt",
@@ -208,12 +188,12 @@ func runFrontendContractTests(t *testing.T, newClient func(t *testing.T) fronten
 	})
 
 	t.Run("MultipartUpload", func(t *testing.T) {
+		// This checks that completed multipart uploads are readable through the normal object path on both frontends.
 		client := newClient(t)
 		ctx := context.Background()
 		parts := []string{"hello ", "world"}
 		key := "multipart/data.txt"
 
-		// Multipart completion must materialize a normal object that can be fetched through the same read path.
 		if err := client.MultipartUpload(ctx, "demo", key, parts); err != nil {
 			t.Fatalf("MultipartUpload() error = %v", err)
 		}
